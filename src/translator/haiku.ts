@@ -1,12 +1,18 @@
 import Anthropic from "@anthropic-ai/sdk";
+import type { AuthMethod } from "../config.js";
 import type { Translator } from "./index.js";
 import { logger } from "../utils/logger.js";
 
-export function createHaikuTranslator(apiKey: string): Translator {
+export function createHaikuTranslator(auth: AuthMethod): Translator {
   // Connect directly to api.anthropic.com to avoid infinite loop through proxy
   const client = new Anthropic({
-    apiKey,
+    apiKey: auth.type === "api_key" ? auth.apiKey : null,
+    authToken: auth.type === "auth_token" ? auth.authToken : null,
     baseURL: "https://api.anthropic.com",
+    defaultHeaders:
+      auth.type === "auth_token"
+        ? { "anthropic-beta": "oauth-2025-04-20" }
+        : undefined,
   });
 
   return {

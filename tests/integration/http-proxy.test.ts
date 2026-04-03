@@ -5,7 +5,7 @@ import type { Config } from "../../src/config.js";
 import type { Detector } from "../../src/detector/index.js";
 import type { Translator } from "../../src/translator/index.js";
 
-// Mock upstream server that echoes back the request body
+// Mock upstream server that echoes back the request body and headers
 function createMockUpstream(): { server: Server; port: number; start: () => Promise<number>; stop: () => Promise<void> } {
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -17,6 +17,7 @@ function createMockUpstream(): { server: Server; port: number; start: () => Prom
         received: JSON.parse(body || "{}"),
         path: req.url,
         method: req.method,
+        headers: req.headers,
       }));
     });
   });
@@ -67,7 +68,7 @@ describe("HTTP Proxy Integration", () => {
       backend: "haiku",
       sourceLang: "auto",
       targetLang: "eng",
-      anthropicApiKey: "test-key",
+      auth: { type: "api_key", apiKey: "test-key" },
       proxyPort: 0,
       upstreamUrl: `http://localhost:${upstreamPort}`,
       minDetectLength: 20,
@@ -151,5 +152,66 @@ describe("HTTP Proxy Integration", () => {
     const data = await res.json();
     expect(data.received.messages[0].content).toBe("[TRANSLATED] ストリーミングテスト");
     expect(data.received.stream).toBe(true);
+  });
+
+  it("should add anthropic-beta oauth header when Authorization Bearer is present", async () => {
+    const body = {
+      messages: [{ role: "user", content: "テスト" }],
+      model: "claude-sonnet-4-20250514",
+    };
+
+    const res = await fetch(`http://localhost:${proxyPort}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "authorization": "Bearer oauth-token-123",
+      },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.headers["anthropic-beta"]).toBe("oauth-2025-04-20");
+  });
+
+  it("should merge anthropic-beta oauth header with existing beta headers", async () => {
+    const body = {
+      messages: [{ role: "user", content: "テスト" }],
+      model: "claude-sonnet-4-20250514",
+    };
+
+    const res = await fetch(`http://localhost:${proxyPort}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "authorization": "Bearer oauth-token-123",
+        "anthropic-beta": "messages-2024-12-01",
+      },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.headers["anthropic-beta"]).toBe("messages-2024-12-01,oauth-2025-04-20");
+  });
+
+  it("should not add anthropic-beta header when using API key auth", async () => {
+    const body = {
+      messages: [{ role: "user", content: "テスト" }],
+      model: "claude-sonnet-4-20250514",
+    };
+
+    const res = await fetch(`http://localhost:${proxyPort}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": "sk-ant-test",
+      },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.headers["anthropic-beta"]).toBeUndefined();
   });
 });
