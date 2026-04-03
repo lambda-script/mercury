@@ -114,6 +114,65 @@ async function translateMessage(
   return { ...message, content: translatedContent };
 }
 
+// ISO 639-3 codes used by franc → human-readable language names
+const LANG_NAMES: Record<string, string> = {
+  jpn: "Japanese",
+  kor: "Korean",
+  cmn: "Chinese",
+  zho: "Chinese",
+  vie: "Vietnamese",
+  tha: "Thai",
+  ara: "Arabic",
+  hin: "Hindi",
+  ben: "Bengali",
+  rus: "Russian",
+  ukr: "Ukrainian",
+  deu: "German",
+  fra: "French",
+  spa: "Spanish",
+  por: "Portuguese",
+  ita: "Italian",
+  nld: "Dutch",
+  pol: "Polish",
+  tur: "Turkish",
+  ind: "Indonesian",
+  msa: "Malay",
+};
+
+function detectSourceLang(body: MessagesRequestBody, detector: Detector): string | null {
+  for (const msg of body.messages) {
+    if (msg.role !== "user") continue;
+    if (typeof msg.content === "string") {
+      const result = detector.detect(msg.content);
+      if (result.confidence > 0) return result.lang;
+    } else {
+      for (const block of msg.content) {
+        if (block.type === "text") {
+          const result = detector.detect(block.text);
+          if (result.confidence > 0) return result.lang;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function injectResponseLang(
+  system: string | readonly ContentBlock[] | undefined,
+  langCode: string,
+): string | readonly ContentBlock[] {
+  const langName = LANG_NAMES[langCode] ?? langCode;
+  const instruction = `IMPORTANT: Always respond in ${langName}.`;
+
+  if (!system) {
+    return instruction;
+  }
+  if (typeof system === "string") {
+    return `${system}\n\n${instruction}`;
+  }
+  return [...system, { type: "text" as const, text: instruction }];
+}
+
 export async function transformRequest(
   body: MessagesRequestBody,
   detector: Detector,
@@ -122,13 +181,17 @@ export async function transformRequest(
 ): Promise<MessagesRequestBody> {
   logger.info(`Transforming request with ${body.messages.length} messages`);
 
+  // Detect original language before translation
+  const sourceLang = detectSourceLang(body, detector);
+  const needsLangInjection = sourceLang !== null && sourceLang !== targetLang;
+
   const translatedMessages = await Promise.all(
     body.messages.map((msg) => translateMessage(msg, detector, translator, targetLang)),
   );
 
-  // system prompt is left untouched (assumed English)
   return {
     ...body,
     messages: translatedMessages,
+    ...(needsLangInjection ? { system: injectResponseLang(body.system, sourceLang) } : {}),
   };
 }

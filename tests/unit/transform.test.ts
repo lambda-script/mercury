@@ -190,7 +190,7 @@ describe("transformRequest", () => {
     expect(translator.translate).not.toHaveBeenCalled();
   });
 
-  it("should preserve system prompt untouched", async () => {
+  it("should preserve system prompt and append response language instruction", async () => {
     const body: MessagesRequestBody = {
       messages: [{ role: "user", content: "テスト" }],
       system: "You are a helpful assistant.",
@@ -200,6 +200,64 @@ describe("transformRequest", () => {
     const result = await transformRequest(
       body,
       createMockDetector(false),
+      createMockTranslator(),
+      "eng",
+    );
+
+    expect(typeof result.system).toBe("string");
+    expect(result.system).toContain("You are a helpful assistant.");
+    expect(result.system).toContain("Japanese");
+  });
+
+  it("should inject response language into array system prompt", async () => {
+    const body: MessagesRequestBody = {
+      messages: [{ role: "user", content: "テスト" }],
+      system: [{ type: "text", text: "You are a helpful assistant." }],
+      model: "claude-sonnet-4-20250514",
+    };
+
+    const result = await transformRequest(
+      body,
+      createMockDetector(false),
+      createMockTranslator(),
+      "eng",
+    );
+
+    expect(Array.isArray(result.system)).toBe(true);
+    if (Array.isArray(result.system)) {
+      const texts = result.system.map((b) => (b as { text: string }).text).join(" ");
+      expect(texts).toContain("You are a helpful assistant.");
+      expect(texts).toContain("Japanese");
+    }
+  });
+
+  it("should create system prompt with response language when no system prompt exists", async () => {
+    const body: MessagesRequestBody = {
+      messages: [{ role: "user", content: "テスト" }],
+      model: "claude-sonnet-4-20250514",
+    };
+
+    const result = await transformRequest(
+      body,
+      createMockDetector(false),
+      createMockTranslator(),
+      "eng",
+    );
+
+    expect(typeof result.system).toBe("string");
+    expect(result.system).toContain("Japanese");
+  });
+
+  it("should NOT inject response language when text is already in target language", async () => {
+    const body: MessagesRequestBody = {
+      messages: [{ role: "user", content: "Hello world" }],
+      system: "You are a helpful assistant.",
+      model: "claude-sonnet-4-20250514",
+    };
+
+    const result = await transformRequest(
+      body,
+      createMockDetector(true),
       createMockTranslator(),
       "eng",
     );
