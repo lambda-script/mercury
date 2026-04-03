@@ -27,7 +27,7 @@ The proxy intercepts `POST /v1/messages` requests, translates text content block
 
 - **Detector interface** (`src/detector/index.ts`): Abstracts language detection. Only implementation is franc-based (`franc.ts`). Short text (< `minDetectLength`) skips detection and is assumed to be the target language.
 - **Translator interface** (`src/translator/index.ts`): Abstracts translation backends. Two implementations: `google-free.ts` (no API key, default) and `haiku.ts` (uses Claude Haiku via Anthropic SDK).
-- **Transform layer** (`src/transform/messages.ts`): Walks the Anthropic Messages API structure (text blocks, tool_result content, nested arrays). Never translates `tool_use.input` (would corrupt JSON). System prompts are left untouched.
+- **Transform layer** (`src/transform/messages.ts`): Walks the Anthropic Messages API structure (text blocks, tool_result content, nested arrays). Never translates `tool_use.input` (would corrupt JSON). When non-English input is detected, injects `IMPORTANT: Always respond in {language}.` into the system prompt so Claude responds in the user's original language.
 - **Config** (`src/config.ts`): All configuration via environment variables (`MERCURY_*`). Supports both API key and OAuth token auth for the haiku backend.
 - **OAuth beta header injection** (`src/proxy/http.ts`): When `Authorization: Bearer` is present, automatically adds `anthropic-beta: oauth-2025-04-20` header.
 

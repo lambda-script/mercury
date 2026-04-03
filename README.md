@@ -17,10 +17,13 @@ Claude Code ──→ mercury (translate) ──→ Anthropic API
 1. Intercepts requests to the Anthropic Messages API
 2. Detects non-English text in user messages
 3. Translates to English using the configured backend
-4. Forwards the translated request to the upstream API
-5. Streams the response back untouched (Claude responds in English)
+4. Injects "Always respond in {original language}" into the system prompt
+5. Forwards the translated request to the upstream API
+6. Streams the response back untouched
 
 **Important**: `tool_use.input` is never translated to prevent JSON parameter corruption.
+
+**Response language**: When non-English input is detected, mercury automatically injects a response language instruction into the system prompt so Claude responds in the user's original language.
 
 ## Quick Start
 
