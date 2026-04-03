@@ -35,6 +35,18 @@ function forwardRequest(
   delete filteredHeaders["host"];
   // Remove transfer-encoding since we send a complete body
   delete filteredHeaders["transfer-encoding"];
+
+  // If OAuth Bearer token is present, add the beta header so api.anthropic.com accepts it
+  const authHeader = filteredHeaders["authorization"] ?? "";
+  if (authHeader.startsWith("Bearer ")) {
+    const existing = filteredHeaders["anthropic-beta"] ?? "";
+    const betaFlag = "oauth-2025-04-20";
+    if (!existing.includes(betaFlag)) {
+      filteredHeaders["anthropic-beta"] = existing
+        ? `${existing},${betaFlag}`
+        : betaFlag;
+    }
+  }
   if (body) {
     filteredHeaders["content-length"] = String(body.length);
   }
@@ -135,7 +147,10 @@ export function createHttpProxy(
     start(): Promise<void> {
       return new Promise((resolve) => {
         server.listen(config.proxyPort, () => {
-          logger.info(`Mercury proxy listening on http://localhost:${config.proxyPort}`);
+          console.log(`\nmercury v0.2.0 — Translation proxy for Claude Code`);
+          console.log(`Listening on http://localhost:${config.proxyPort}`);
+          console.log(`\nConnect Claude Code:`);
+          console.log(`  ANTHROPIC_BASE_URL=http://localhost:${config.proxyPort} claude\n`);
           logger.info(`Upstream: ${config.upstreamUrl}`);
           logger.info(`Target language: ${config.targetLang}`);
           logger.info(`Backend: ${config.backend}`);
