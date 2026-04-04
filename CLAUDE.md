@@ -57,6 +57,4 @@ All interfaces use `readonly` properties. Transform functions return new objects
 
 1. Merge PRs with Conventional Commit titles to `main`
 2. `release-please.yml` automatically creates/updates a Release PR (CHANGELOG.md + version bump)
-3. Merge the Release PR → release-please creates a `v*` tag
-4. `release.yml` triggers on the tag, runs `npm publish --provenance`, and creates a GitHub Release
-
+3. Merge the Release PR → release-please creates a GitHub Release and runs `npm publish --provenance` in the same workflow
