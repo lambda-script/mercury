@@ -1,51 +1,74 @@
 # @lambda-script/mercury
 
-Translation proxy for Claude Code — transparently translates non-English text to English to reduce token consumption.
+Translation proxy for MCP servers — transparently translates non-English tool results to English to reduce token consumption.
 
 ## Why?
 
-Non-English languages consume significantly more tokens than English due to tokenizer inefficiency. By translating user messages to English before they reach Claude, mercury reduces input tokens by 36–72% depending on the language.
+Non-English languages consume significantly more tokens than English due to tokenizer inefficiency. By translating MCP tool results to English before they reach Claude Code, mercury reduces input tokens by 28–64% depending on the language.
 
 ## How it works
 
 ```
-Claude Code ──→ mercury (translate) ──→ Anthropic API
+Claude Code ──→ mercury (stdio proxy) ──→ MCP Server
+                 ├─ Intercept JSON-RPC tool results
                  ├─ Language Detection (franc)
-                 └─ Translation (Google Translate / Claude Haiku)
+                 ├─ Translation (Google Translate / Claude Haiku)
+                 └─ Skip code blocks, error results; translate strings inside JSON
 ```
 
-1. Intercepts requests to the Anthropic Messages API
-2. Detects non-English text in user messages
-3. Translates to English using the configured backend
-4. Injects "Always respond in {original language}" into the system prompt
-5. Forwards the translated request to the upstream API
-6. Streams the response back untouched
+1. Wraps an MCP server command as a stdio proxy
+2. Intercepts JSON-RPC `tools/call` responses from the child MCP server
+3. Detects non-English text in tool result content blocks
+4. Translates text blocks to English using the configured backend
+5. For JSON content, walks the structure and translates natural-language string values
+6. Passes through code blocks, images, and error results untouched
+7. Returns the translated result to Claude Code
 
-**Important**: `tool_use.input` is never translated to prevent JSON parameter corruption.
+## Requirements
 
-**Response language**: When non-English input is detected, mercury automatically injects a response language instruction into the system prompt so Claude responds in the user's original language.
+- Node.js >= 20.0.0
 
 ## Quick Start
 
-```bash
-# Run with npx (no install needed)
-npx @lambda-script/mercury
+Prepend `npx @lambda-script/mercury --` to your existing MCP server command in `.mcp.json`.
 
-# Or install globally
-npm install -g @lambda-script/mercury
-mercury
+### Google Translate (default, no API key needed)
 
-# In another terminal, use Claude Code with the proxy
-ANTHROPIC_BASE_URL=http://localhost:3100 claude
+```json
+{
+  "mcpServers": {
+    "your-server": {
+      "command": "npx",
+      "args": ["@lambda-script/mercury", "--", "npx", "your-mcp-server"],
+    }
+  }
+}
 ```
 
-No API key is required by default — mercury uses Google Translate (unofficial) as the translation backend.
+### Claude Haiku (higher quality, requires API key)
+
+Claude Code does **not** pass `ANTHROPIC_*` env vars to MCP servers automatically — you must set them explicitly:
+
+```json
+{
+  "mcpServers": {
+    "your-server": {
+      "command": "npx",
+      "args": ["@lambda-script/mercury", "--", "npx", "your-mcp-server"],
+      "env": {
+        "MERCURY_BACKEND": "haiku",
+        "ANTHROPIC_API_KEY": "sk-ant-...",
+      }
+    }
+  }
+}
+```
 
 ## Translation Backends
 
 | Backend | `MERCURY_BACKEND` | API Key Required | Notes |
 |---------|-------------------|------------------|-------|
-| **Google Translate (free)** | `google-free` (default) | No | Uses `google-translate-api-x`. No signup needed. |
+| **Google Translate (free)** | `google-free` (default) | No | Uses `google-translate-api-x`. No signup needed. Auto-chunking for long text, retry with TLD rotation. |
 | Claude Haiku | `haiku` | Yes (`ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`) | Higher quality, but adds LLM cost. |
 
 ## Configuration
@@ -55,12 +78,12 @@ All configuration is via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MERCURY_BACKEND` | `google-free` | Translation backend: `google-free`, `haiku` |
-| `MERCURY_PORT` | `3100` | Proxy listen port |
 | `MERCURY_TARGET_LANG` | `en` | Target language for translation |
 | `MERCURY_SOURCE_LANG` | `auto` | Source language (`auto` for detection) |
-| `MERCURY_UPSTREAM_URL` | `https://api.anthropic.com` | Upstream API URL |
 | `MERCURY_MIN_DETECT_LENGTH` | `20` | Minimum text length for language detection |
 | `MERCURY_LOG_LEVEL` | `info` | Log level: debug, info, warn, error |
+| `MERCURY_LOG_FILE` | *(none)* | Log to file instead of stderr (useful for MCP servers where stderr is swallowed) |
+| `MERCURY_HAIKU_MODEL` | `claude-haiku-4-5-20251001` | Model ID for the haiku backend |
 
 ### Haiku backend only
 
@@ -71,42 +94,44 @@ All configuration is via environment variables:
 
 ## Benchmark
 
-Measured with the [Anthropic token counting API](https://docs.anthropic.com/en/docs/build-with-claude/token-counting) (`claude-sonnet-4-20250514` tokenizer). Each language tested with 3 samples (short ~30 tok, medium ~80 tok, long ~170 tok).
+Measured with the [Anthropic token counting API](https://docs.anthropic.com/en/docs/build-with-claude/token-counting) (`claude-sonnet-4-20250514` tokenizer) using 5 realistic MCP tool result scenarios (wiki articles, API responses with JSON, documentation with code blocks, long articles, and mixed multi-block results).
 
 ### Token Reduction by Language
 
 ```
-Hindi          ████████████████████████████████████░░░░░░░░░░░░░░  72%  683 → 190 tok
-Arabic         ███████████████████████████████░░░░░░░░░░░░░░░░░░░  63%  511 → 190 tok
-Korean         ███████████████████████████████░░░░░░░░░░░░░░░░░░░  62%  501 → 190 tok
-Russian        ██████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░  53%  406 → 190 tok
-German         █████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░  52%  394 → 190 tok
-Japanese       ████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░  49%  374 → 190 tok
-French         █████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  42%  328 → 190 tok
-Spanish        ███████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  39%  309 → 190 tok
-Chinese (Sim.) ██████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  36%  297 → 190 tok
-English        ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   0%  (baseline)
+Hindi          ████████████████████████████████░░░░░░░░░░░░░░░░░░░  64%  4009 → 1430 tok
+Arabic         ████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░  57%  3326 → 1424 tok
+Korean         █████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░  51%  2927 → 1430 tok
+Russian        █████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  43%  2513 → 1433 tok
+Japanese       ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  41%  2538 → 1488 tok
+German         ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  41%  2403 → 1430 tok
+French         ████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  33%  2120 → 1427 tok
+Spanish        ███████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  30%  2037 → 1424 tok
+Chinese (Sim.) ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  28%  1992 → 1427 tok
+English        ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   0%  (baseline)
 ```
 
-### Translation Fidelity (translated EN tokens vs original EN)
+Token counts are the sum across all 5 scenarios. Scenarios with JSON/code blocks (skipped by Mercury) show lower reduction rates than text-only scenarios.
+
+### Translation Fidelity (Mercury output tokens vs original EN)
 
 Closer to 1.00x = better. Values far from 1.00x indicate information loss or added verbosity.
 
-| Language | Google Free | Haiku |
-|----------|-------------|-------|
-| Hindi | 0.98x (-2%) | 0.99x (-1%) |
-| Arabic | 0.98x (-2%) | 1.02x (+2%) |
-| Korean | 1.06x (+6%) | 1.04x (+4%) |
-| Russian | 1.01x (+1%) | 1.04x (+4%) |
-| German | 1.04x (+4%) | 1.04x (+4%) |
-| Japanese | 1.04x (+4%) | 1.04x (+4%) |
-| French | 0.98x (-2%) | 1.02x (+2%) |
-| Spanish | 1.00x (+0%) | 1.01x (+1%) |
-| Chinese (Sim.) | 0.95x (-5%) | 0.99x (-1%) |
+| Language | Google Free |
+|----------|-------------|
+| Hindi | 1.00x (+0%) |
+| Arabic | 1.00x (+0%) |
+| Korean | 1.00x (+0%) |
+| Russian | 1.01x (+1%) |
+| Japanese | 1.04x (+4%) |
+| German | 1.00x (+0%) |
+| French | 1.00x (+0%) |
+| Spanish | 1.00x (+0%) |
+| Chinese (Sim.) | 1.00x (+0%) |
 
-Both backends produce translations within ~5% of the original English token count. With the default `google-free` backend, translation cost is $0.
+The google-free backend produces translations within ~4% of the original English token count at $0 translation cost.
 
-Run benchmarks yourself: `npm run benchmark:multi` (requires `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`).
+Run benchmarks yourself: `npm run benchmark` (requires `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`).
 
 ## Development
 
@@ -126,7 +151,7 @@ npm run test:coverage
 # Watch mode
 npm run dev
 
-# Run token cost benchmark
+# Run MCP tool result benchmark
 npm run benchmark
 ```
 
@@ -140,8 +165,7 @@ npm run benchmark
 | `npm run test:coverage` | Run tests with coverage |
 | `npm run lint` | Lint source code |
 | `npm run typecheck` | Type check without emitting |
-| `npm run benchmark` | Run token cost benchmark |
-| `npm run benchmark:multi` | Run multilingual token reduction benchmark |
+| `npm run benchmark` | Run MCP tool result token reduction benchmark |
 <!-- /AUTO-GENERATED:scripts -->
 
 ## Architecture
@@ -152,17 +176,20 @@ src/
 ├── config.ts             # Environment-based configuration
 ├── detector/
 │   ├── index.ts          # Detector interface
-│   └── franc.ts          # franc-based language detection
+│   └── franc.ts          # franc + Unicode script-based language detection
 ├── translator/
 │   ├── index.ts          # Translator interface
-│   ├── google-free.ts    # Google Translate (free, no API key)
+│   ├── google-free.ts    # Google Translate (free, auto-chunking, retry with TLD rotation)
 │   └── haiku.ts          # Claude Haiku backend
 ├── transform/
-│   └── messages.ts       # Messages API request transformation
+│   └── tool-result.ts    # MCP tool result translation (translates JSON strings, skips code/errors)
 ├── proxy/
-│   └── http.ts           # HTTP proxy server (+ OAuth beta header injection)
+│   ├── stdio.ts          # MCP stdio proxy (JSON-RPC message interception)
+│   └── tracker.ts        # JSON-RPC request ID → method name tracker
 └── utils/
-    └── logger.ts         # Logging utility
+    ├── logger.ts         # Logging utility
+    ├── lang.ts           # Language name mappings
+    └── tokens.ts         # Unicode script-based token estimation
 ```
 
 ## License

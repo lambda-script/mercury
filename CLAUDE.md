@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Does
 
-Mercury is an HTTP translation proxy for Claude Code. It sits between Claude Code and the Anthropic API, transparently translating non-English user messages to English before forwarding, reducing token consumption for non-English speakers (36-72% reduction depending on language).
+Mercury is a translation proxy for MCP servers used with Claude Code. It wraps MCP server commands via stdio, transparently translating non-English tool results to English to reduce token consumption (28-64% reduction depending on language).
 
 ## Commands
 
@@ -19,17 +19,35 @@ npm run test:coverage  # Coverage report (80% threshold enforced)
 
 ## Architecture
 
-The proxy intercepts `POST /v1/messages` requests, translates text content blocks, and forwards to the upstream Anthropic API. All other requests pass through untouched.
+### MCP stdio proxy
 
-**Request flow:** `Claude Code → HTTP Proxy (src/proxy/http.ts) → Detect Language (src/detector/) → Translate if non-English (src/translator/) → Forward to api.anthropic.com`
+Mercury wraps an MCP server as a stdio proxy, intercepting JSON-RPC 2.0 messages. Tool call results containing non-English text are translated to English before being returned to Claude Code.
+
+**Request flow:** `Claude Code → Mercury (stdio) → MCP Server (child process)`
+**Response flow:** `MCP Server → Mercury (translate tool results) → Claude Code`
+
+```json
+// .mcp.json configuration example
+{
+  "mcpServers": {
+    "your-server": {
+      "command": "npx",
+      "args": ["@lambda-script/mercury", "--", "npx", "your-mcp-server"]
+    }
+  }
+}
+```
 
 ### Key design decisions
 
-- **Detector interface** (`src/detector/index.ts`): Abstracts language detection. Only implementation is franc-based (`franc.ts`). Short text (< `minDetectLength`) skips detection and is assumed to be the target language.
+- **Stdio proxy** (`src/proxy/stdio.ts`): Spawns child MCP server process, pipes stdin/stdout/stderr. Intercepts JSON-RPC responses, translates `tools/call` results, strips `outputSchema` from `tools/list` responses.
+- **Request tracker** (`src/proxy/tracker.ts`): Maps JSON-RPC request IDs to method names (like tooner's `wait.go`). Used to identify which responses correspond to `tools/call` or `tools/list` requests.
+- **Tool result transform** (`src/transform/tool-result.ts`): Translates text content blocks in MCP tool results. For JSON content, recursively walks the structure and translates natural-language string values (skips URLs, paths, dates, short identifiers). Skips code blocks and error results. Returns transform statistics.
+- **Detector interface** (`src/detector/index.ts`): Abstracts language detection. Only implementation is franc-based (`franc.ts`). For short text (< `minDetectLength`), uses Unicode script-based detection (Hiragana/Katakana → Japanese, Hangul → Korean, CJK → Chinese, etc.) before falling back to "undetermined". Longer text uses franc's trigram analysis.
 - **Translator interface** (`src/translator/index.ts`): Abstracts translation backends. Two implementations: `google-free.ts` (no API key, default) and `haiku.ts` (uses Claude Haiku via Anthropic SDK).
-- **Transform layer** (`src/transform/messages.ts`): Walks the Anthropic Messages API structure (text blocks, tool_result content, nested arrays). Never translates `tool_use.input` (would corrupt JSON). When non-English input is detected, injects `IMPORTANT: Always respond in {language}.` into the system prompt so Claude responds in the user's original language.
-- **Config** (`src/config.ts`): All configuration via environment variables (`MERCURY_*`). Supports both API key and OAuth token auth for the haiku backend.
-- **OAuth beta header injection** (`src/proxy/http.ts`): When `Authorization: Bearer` is present, automatically adds `anthropic-beta: oauth-2025-04-20` header.
+- **google-free resilience** (`src/translator/google-free.ts`): Text is chunked at paragraph/sentence boundaries (max 4500 chars) to stay under Google Translate's ~5000 char limit. Each chunk retries up to 3 times with TLD rotation (`com`, `co.jp`, `co.uk`) and exponential backoff. On total failure, returns original text (graceful degradation).
+- **Config** (`src/config.ts`): All configuration via environment variables (`MERCURY_*`). No dotenv — env vars must be set by the caller (e.g., `.mcp.json` `env` field). Supports both API key and OAuth token auth for the haiku backend. Note: Claude Code does NOT automatically pass `ANTHROPIC_AUTH_TOKEN` to MCP server processes — haiku backend requires explicit env configuration.
+- **Logger** (`src/utils/logger.ts`): Writes to stderr by default (preserves stdout for JSON-RPC). Set `MERCURY_LOG_FILE` for file-based logging when stderr is swallowed (e.g., Claude Code MCP servers).
 
 ### Immutability
 
@@ -41,3 +59,4 @@ All interfaces use `readonly` properties. Transform functions return new objects
 2. `release-please.yml` automatically creates/updates a Release PR (CHANGELOG.md + version bump)
 3. Merge the Release PR → release-please creates a `v*` tag
 4. `release.yml` triggers on the tag, runs `npm publish --provenance`, and creates a GitHub Release
+
