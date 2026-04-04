@@ -9,6 +9,7 @@ describe("loadConfig", () => {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_AUTH_TOKEN;
     delete process.env.MERCURY_BACKEND;
+    delete process.env.MERCURY_HAIKU_MODEL;
   });
 
   afterEach(() => {
@@ -21,9 +22,15 @@ describe("loadConfig", () => {
     expect(config.sourceLang).toBe("auto");
     expect(config.targetLang).toBe("en");
     expect(config.auth).toBeNull();
-    expect(config.proxyPort).toBe(3100);
-    expect(config.upstreamUrl).toBe("https://api.anthropic.com");
     expect(config.minDetectLength).toBe(20);
+    expect(config.haikuModel).toBe("claude-haiku-4-5-20251001");
+  });
+
+  it("should use custom haiku model from MERCURY_HAIKU_MODEL", () => {
+    process.env.MERCURY_HAIKU_MODEL = "claude-haiku-4-5-custom";
+
+    const config = loadConfig();
+    expect(config.haikuModel).toBe("claude-haiku-4-5-custom");
   });
 
   it("should use API key auth when ANTHROPIC_API_KEY is set", () => {
@@ -69,16 +76,12 @@ describe("loadConfig", () => {
     process.env.MERCURY_BACKEND = "deepl";
     process.env.MERCURY_SOURCE_LANG = "ja";
     process.env.MERCURY_TARGET_LANG = "fr";
-    process.env.MERCURY_PORT = "8080";
-    process.env.MERCURY_UPSTREAM_URL = "http://custom.api.com";
     process.env.MERCURY_MIN_DETECT_LENGTH = "50";
 
     const config = loadConfig();
     expect(config.backend).toBe("deepl");
     expect(config.sourceLang).toBe("ja");
     expect(config.targetLang).toBe("fr");
-    expect(config.proxyPort).toBe(8080);
-    expect(config.upstreamUrl).toBe("http://custom.api.com");
     expect(config.minDetectLength).toBe(50);
   });
 });

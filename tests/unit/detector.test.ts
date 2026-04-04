@@ -53,11 +53,20 @@ describe("FrancDetector", () => {
   });
 
   describe("custom minLength", () => {
-    it("should respect custom minimum length", () => {
+    it("should use script detection for short non-Latin text", () => {
       const strictDetector = createFrancDetector(100);
-      // Text under 100 chars should be treated as undetermined
+      // Short Japanese text: franc skipped, but script detection finds kana
       const result = strictDetector.detect("これは短いテキストです。");
+      expect(result.lang).toBe("jpn");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should return undetermined for short Latin text", () => {
+      const strictDetector = createFrancDetector(100);
+      // Short Latin text: franc skipped, no non-Latin script found
+      const result = strictDetector.detect("Hello world");
       expect(result.lang).toBe("und");
+      expect(result.confidence).toBe(0);
     });
   });
 });

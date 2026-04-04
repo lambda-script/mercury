@@ -3,7 +3,7 @@ import type { AuthMethod } from "../config.js";
 import type { Translator } from "./index.js";
 import { logger } from "../utils/logger.js";
 
-export function createHaikuTranslator(auth: AuthMethod): Translator {
+export function createHaikuTranslator(auth: AuthMethod, model: string): Translator {
   // Connect directly to api.anthropic.com to avoid infinite loop through proxy
   const client = new Anthropic({
     apiKey: auth.type === "api_key" ? auth.apiKey : null,
@@ -22,7 +22,7 @@ export function createHaikuTranslator(auth: AuthMethod): Translator {
       logger.debug(`Translating ${text.length} chars from ${fromLabel} to ${to}`);
 
       const response = await client.messages.create({
-        model: "claude-haiku-4-5-20251001",
+        model,
         max_tokens: 4096,
         messages: [
           {

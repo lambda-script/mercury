@@ -1,4 +1,6 @@
-export type LogLevel = "debug" | "info" | "warn" | "error";
+import { appendFileSync } from "node:fs";
+
+type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LOG_LEVELS: Record<LogLevel, number> = {
   debug: 0,
@@ -8,6 +10,7 @@ const LOG_LEVELS: Record<LogLevel, number> = {
 };
 
 const currentLevel: LogLevel = (process.env.MERCURY_LOG_LEVEL as LogLevel) ?? "info";
+const logFile: string | undefined = process.env.MERCURY_LOG_FILE || undefined;
 
 function shouldLog(level: LogLevel): boolean {
   return LOG_LEVELS[level] >= LOG_LEVELS[currentLevel];
@@ -18,25 +21,39 @@ function formatMessage(level: LogLevel, message: string): string {
   return `[${timestamp}] [${level.toUpperCase()}] ${message}`;
 }
 
+function write(formatted: string): void {
+  const line = formatted + "\n";
+  if (logFile) {
+    try {
+      appendFileSync(logFile, line);
+    } catch {
+      // If file write fails, fall back to stderr
+      process.stderr.write(line);
+    }
+  } else {
+    process.stderr.write(line);
+  }
+}
+
 export const logger = {
   debug(message: string): void {
     if (shouldLog("debug")) {
-      process.stderr.write(formatMessage("debug", message) + "\n");
+      write(formatMessage("debug", message));
     }
   },
   info(message: string): void {
     if (shouldLog("info")) {
-      process.stderr.write(formatMessage("info", message) + "\n");
+      write(formatMessage("info", message));
     }
   },
   warn(message: string): void {
     if (shouldLog("warn")) {
-      process.stderr.write(formatMessage("warn", message) + "\n");
+      write(formatMessage("warn", message));
     }
   },
   error(message: string): void {
     if (shouldLog("error")) {
-      process.stderr.write(formatMessage("error", message) + "\n");
+      write(formatMessage("error", message));
     }
   },
 };
