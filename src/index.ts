@@ -4,7 +4,7 @@ import { createFrancDetector } from "./detector/franc.js";
 import { createGoogleFreeTranslator } from "./translator/google-free.js";
 import { createHaikuTranslator } from "./translator/haiku.js";
 import type { Translator } from "./translator/index.js";
-import { createHttpProxy } from "./proxy/http.js";
+import { createStdioProxy } from "./proxy/stdio.js";
 import { logger } from "./utils/logger.js";
 
 function createTranslator(config: Config): Translator {
@@ -15,73 +15,107 @@ function createTranslator(config: Config): Translator {
       if (!config.auth) {
         throw new Error("Auth is required for the 'haiku' backend");
       }
-      return createHaikuTranslator(config.auth);
+      return createHaikuTranslator(config.auth, config.haikuModel);
     default:
       throw new Error(`Unsupported backend: ${config.backend}`);
   }
 }
 
 const HELP_TEXT = `
-mercury — Translation proxy for Claude Code
+mercury — MCP stdio translation proxy
 
 Usage:
-  mercury              Start HTTP translation proxy (default)
-  mercury http         Start HTTP translation proxy
-  mercury help         Show this help message
+  mercury [options] -- <command> [args...]
+
+Wraps an MCP server command, translating tool results from non-English
+to English to reduce token consumption.
+
+Example .mcp.json:
+  {
+    "mcpServers": {
+      "your-server": {
+        "command": "npx",
+        "args": ["@lambda-script/mercury", "--", "npx", "your-mcp-server"]
+      }
+    }
+  }
+
+Options:
+  -h, --help             Show this help message
 
 Environment variables:
   MERCURY_BACKEND            Translation backend: google-free (default), haiku
   MERCURY_SOURCE_LANG        Source language: auto (default)
   MERCURY_TARGET_LANG        Target language: en (default)
-  MERCURY_PORT               Proxy port: 3100 (default)
-  MERCURY_UPSTREAM_URL       Upstream API URL: https://api.anthropic.com (default)
   MERCURY_MIN_DETECT_LENGTH  Minimum text length for detection: 20 (default)
   MERCURY_LOG_LEVEL          Log level: debug, info, warn, error (default: info)
+  MERCURY_LOG_FILE           Log to file instead of stderr
 
   # Required only for 'haiku' backend:
   ANTHROPIC_API_KEY          API key for Haiku translation
   ANTHROPIC_AUTH_TOKEN       OAuth token for Haiku translation (alternative)
-
-Example:
-  # Start proxy with npx (uses Google Translate, no API key needed)
-  npx @lambda-script/mercury
-
-  # Use with Claude Code
-  ANTHROPIC_BASE_URL=http://localhost:3100 claude
 `.trim();
 
-async function main() {
-  const command = process.argv[2];
+function parseArgs(argv: readonly string[]): {
+  mode: "stdio" | "help";
+  childCommand?: string;
+  childArgs?: string[];
+} {
+  const args = argv.slice(2);
 
-  if (command === "help" || command === "--help" || command === "-h") {
+  // Check for help flag anywhere
+  if (args.includes("-h") || args.includes("--help") || args.includes("help")) {
+    return { mode: "help" };
+  }
+
+  // Check for -- separator (stdio proxy mode)
+  const separatorIdx = args.indexOf("--");
+  if (separatorIdx !== -1 && separatorIdx + 1 < args.length) {
+    const childCommand = args[separatorIdx + 1];
+    const childArgs = args.slice(separatorIdx + 2);
+    return { mode: "stdio", childCommand, childArgs };
+  }
+
+  // No arguments — show help
+  if (args.length === 0) {
+    return { mode: "help" };
+  }
+
+  // Assume anything else is a child command without --
+  return { mode: "stdio", childCommand: args[0], childArgs: args.slice(1) };
+}
+
+async function main() {
+  const parsed = parseArgs(process.argv);
+
+  if (parsed.mode === "help") {
     console.log(HELP_TEXT);
     process.exit(0);
   }
 
-  if (!command || command === "http") {
-    const config = loadConfig();
-    const detector = createFrancDetector(config.minDetectLength);
-    const translator = createTranslator(config);
-    const proxy = createHttpProxy(config, detector, translator);
+  const config = loadConfig();
+  const detector = createFrancDetector(config.minDetectLength);
+  const translator = createTranslator(config);
 
-    process.on("SIGINT", async () => {
-      logger.info("Shutting down...");
-      await proxy.stop();
-      process.exit(0);
-    });
-
-    process.on("SIGTERM", async () => {
-      logger.info("Shutting down...");
-      await proxy.stop();
-      process.exit(0);
-    });
-
-    await proxy.start();
-  } else {
-    console.error(`Unknown command: ${command}`);
-    console.log(HELP_TEXT);
+  if (!parsed.childCommand) {
+    console.error("Error: No child command specified.");
+    console.error("Usage: mercury -- <command> [args...]");
     process.exit(1);
   }
+
+  // MCP stdio proxy mode
+  logger.info(`mercury — MCP stdio translation proxy`);
+  logger.info(`Backend: ${config.backend} | Target: ${config.targetLang}`);
+
+  const proxy = createStdioProxy(
+    parsed.childCommand,
+    parsed.childArgs ?? [],
+    detector,
+    translator,
+    config.targetLang,
+  );
+
+  await proxy.start();
 }
 
 main().catch((err) => {

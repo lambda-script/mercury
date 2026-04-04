@@ -1,8 +1,4 @@
-import { config as dotenvConfig } from "dotenv";
-
-dotenvConfig();
-
-export type TranslationBackend = "google-free" | "haiku" | "deepl" | "google";
+export type TranslationBackend = "google-free" | "haiku";
 
 export type AuthMethod =
   | { readonly type: "api_key"; readonly apiKey: string }
@@ -13,9 +9,8 @@ export interface Config {
   readonly sourceLang: string;
   readonly targetLang: string;
   readonly auth: AuthMethod | null;
-  readonly proxyPort: number;
-  readonly upstreamUrl: string;
   readonly minDetectLength: number;
+  readonly haikuModel: string;
 }
 
 export function loadConfig(): Config {
@@ -42,8 +37,7 @@ export function loadConfig(): Config {
     sourceLang: process.env.MERCURY_SOURCE_LANG ?? "auto",
     targetLang: process.env.MERCURY_TARGET_LANG ?? "en",
     auth,
-    proxyPort: parseInt(process.env.MERCURY_PORT ?? "3100", 10),
-    upstreamUrl: process.env.MERCURY_UPSTREAM_URL ?? "https://api.anthropic.com",
     minDetectLength: parseInt(process.env.MERCURY_MIN_DETECT_LENGTH ?? "20", 10),
+    haikuModel: process.env.MERCURY_HAIKU_MODEL ?? "claude-haiku-4-5-20251001",
   };
 }
