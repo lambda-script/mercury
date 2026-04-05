@@ -2,6 +2,8 @@
 
 Translation proxy for MCP servers — transparently translates non-English tool results to English to reduce token consumption.
 
+Works with any MCP client (Claude Code, desktop apps, custom implementations).
+
 ## Why?
 
 Non-English languages consume significantly more tokens than English due to tokenizer inefficiency. By translating MCP tool results to English before they reach Claude Code, mercury reduces input tokens by 28–64% depending on the language.
@@ -132,6 +134,51 @@ Closer to 1.00x = better. Values far from 1.00x indicate information loss or add
 The google-free backend produces translations within ~4% of the original English token count at $0 translation cost.
 
 Run benchmarks yourself: `npm run benchmark` (requires `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`).
+
+## Troubleshooting
+
+### Translation not working / No token savings
+
+**Check the logs**: Set `MERCURY_LOG_LEVEL=debug` to see detailed translation activity. If Mercury detects the text is already in English, it skips translation.
+
+**Check your backend**: If using `haiku`, verify `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is set correctly in the `env` field of `.mcp.json`.
+
+### Haiku backend authentication error
+
+Make sure to set the auth env vars **in `.mcp.json`**. Claude Code does not automatically pass `ANTHROPIC_*` variables to MCP servers.
+
+Example:
+```json
+{
+  "mcpServers": {
+    "your-server": {
+      "command": "npx",
+      "args": ["@lambda-script/mercury", "--", "npx", "your-mcp-server"],
+      "env": {
+        "MERCURY_BACKEND": "haiku",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+### Child process fails to start
+
+**Error**: `Failed to open stdio pipes for child process`
+
+This usually means the child command doesn't exist or can't be executed. Verify:
+- The command path is correct (e.g., `npx`, `node`, or absolute path)
+- The MCP server package is installed or accessible
+- Run the child command directly to confirm it works: `npx your-mcp-server`
+
+### Translation quality issues
+
+**Google Translate (free)** is optimized for speed and zero cost. For higher quality translation, use the `haiku` backend (requires API key).
+
+### Graceful degradation
+
+If translation fails (network error, API limit, etc.), Mercury logs a warning and returns the **original text** unchanged. Your MCP server will continue working, but without token savings for that request.
 
 ## Development
 

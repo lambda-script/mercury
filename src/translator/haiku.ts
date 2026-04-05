@@ -3,6 +3,16 @@ import type { AuthMethod } from "../config.js";
 import type { Translator } from "./index.js";
 import { logger } from "../utils/logger.js";
 
+/**
+ * Create a Claude Haiku translator using the Anthropic SDK.
+ *
+ * Higher translation quality than google-free, but adds LLM API cost.
+ * Connects directly to api.anthropic.com (bypasses any proxy to avoid loops).
+ *
+ * @param auth - Authentication method (API key or OAuth token)
+ * @param model - Claude model ID (default: claude-haiku-4-5-20251001)
+ * @returns A translator instance
+ */
 export function createHaikuTranslator(auth: AuthMethod, model: string): Translator {
   // Connect directly to api.anthropic.com to avoid infinite loop through proxy
   const client = new Anthropic({
@@ -34,7 +44,10 @@ export function createHaikuTranslator(auth: AuthMethod, model: string): Translat
 
       const block = response.content[0];
       if (block.type !== "text") {
-        throw new Error(`Unexpected response type: ${block.type}`);
+        throw new Error(
+          `Unexpected response type from Claude API: got '${block.type}', expected 'text'. ` +
+          `This may indicate an API error or model configuration issue.`
+        );
       }
 
       logger.debug(`Translation complete: ${block.text.length} chars`);

@@ -1,7 +1,19 @@
-// Fast token estimation by Unicode script.
-// CJK/Japanese/Korean characters consume ~1.5 tokens each in Claude's tokenizer.
-// Latin/ASCII text averages ~0.25 tokens per character (4 chars per token).
-// Accuracy is ±10% compared to the actual Anthropic tokenizer.
+/**
+ * Estimate token count for text using Unicode script-based heuristics.
+ *
+ * Token costs per character by script:
+ * - CJK (Japanese, Chinese, Korean): ~1.5 tokens
+ * - Arabic: ~1.2 tokens
+ * - Devanagari/Bengali: ~1.5 tokens
+ * - Thai: ~1.0 tokens
+ * - Cyrillic: ~0.5 tokens
+ * - Latin/ASCII: ~0.25 tokens (4 chars per token)
+ *
+ * Accuracy: ±10% compared to the actual Anthropic tokenizer.
+ *
+ * @param text - Text to estimate token count for
+ * @returns Estimated token count (rounded to nearest integer)
+ */
 
 // Unicode ranges for high-token-cost scripts
 const CJK_PATTERN = /[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/g;
