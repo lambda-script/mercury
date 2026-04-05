@@ -200,7 +200,10 @@ export function createStdioProxy(
         }
 
         if (!child.stdin || !child.stdout || !child.stderr) {
-          reject(new Error("Failed to open stdio pipes for child process"));
+          reject(new Error(
+            `Failed to open stdio pipes for child process '${command}'. ` +
+            `Verify the command exists and is executable.`
+          ));
           return;
         }
 

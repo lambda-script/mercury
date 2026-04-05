@@ -44,7 +44,10 @@ export function createHaikuTranslator(auth: AuthMethod, model: string): Translat
 
       const block = response.content[0];
       if (block.type !== "text") {
-        throw new Error(`Unexpected response type: ${block.type}`);
+        throw new Error(
+          `Unexpected response type from Claude API: got '${block.type}', expected 'text'. ` +
+          `This may indicate an API error or model configuration issue.`
+        );
       }
 
       logger.debug(`Translation complete: ${block.text.length} chars`);
