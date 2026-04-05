@@ -93,4 +93,51 @@ describe("RequestTracker", () => {
       expect(tracker.take(1)).toBe("tools/call");
     });
   });
+
+  describe("MAX_PENDING capacity eviction", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ now: 1000 });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("should evict oldest entry when at capacity (1000)", () => {
+      const tracker = createRequestTracker();
+
+      // Fill to capacity with distinct timestamps
+      for (let i = 0; i < 1000; i++) {
+        vi.setSystemTime(1000 + i);
+        tracker.track(i, "tools/call");
+      }
+      expect(tracker.size).toBe(1000);
+
+      // Add one more — oldest (id:0 at ts:1000) should be evicted
+      vi.setSystemTime(2000);
+      tracker.track(1000, "tools/list");
+
+      expect(tracker.size).toBe(1000);
+      expect(tracker.take(0)).toBeUndefined();
+      expect(tracker.take(1000)).toBe("tools/list");
+      expect(tracker.take(1)).toBe("tools/call");
+    });
+
+    it("should evict only the single oldest when just over capacity", () => {
+      const tracker = createRequestTracker();
+
+      for (let i = 0; i < 1000; i++) {
+        vi.setSystemTime(1000 + i);
+        tracker.track(i, "tools/call");
+      }
+
+      vi.setSystemTime(3000);
+      tracker.track(1000, "tools/list");
+
+      // id:0 evicted, id:1 still present
+      expect(tracker.take(0)).toBeUndefined();
+      expect(tracker.take(1)).toBe("tools/call");
+      expect(tracker.take(999)).toBe("tools/call");
+    });
+  });
 });

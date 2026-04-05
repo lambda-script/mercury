@@ -212,4 +212,103 @@ describe("Google Free Translator", () => {
 
     expect(mockTranslate).toHaveBeenCalledTimes(1);
   });
+
+  it("should split at sentence boundary when no paragraph/newline break exists", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // Create text with only sentence boundaries (no newlines), > 4500 chars
+    const sentence = "This is a test sentence with some content. ";
+    const text = sentence.repeat(120); // ~5280 chars
+
+    mockTranslate.mockImplementation(async (t: string) => ({
+      text: t,
+    }));
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate(text, "auto", "en");
+
+    expect(mockTranslate.mock.calls.length).toBe(2);
+    // First chunk should end at a sentence boundary (". ")
+    expect(mockTranslate.mock.calls[0][0].endsWith(".")).toBe(true);
+  });
+
+  it("should hard split when no boundary exists at all", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // Continuous text with no newlines, periods, or spaces at split points
+    const text = "abcdefghij".repeat(900); // 9000 chars, no breaks
+
+    mockTranslate.mockImplementation(async (t: string) => ({
+      text: t,
+    }));
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate(text, "auto", "en");
+
+    expect(mockTranslate.mock.calls.length).toBe(2);
+    // First chunk should be exactly 4500 chars (hard split at MAX_CHUNK_CHARS)
+    expect(mockTranslate.mock.calls[0][0].length).toBe(4500);
+  });
+
+  it("should split at single newline when no paragraph boundary exists", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // Lines with single newlines, no double newlines, > 4500 chars
+    const line = "A".repeat(90) + "\n";
+    const text = line.repeat(55); // ~5005 chars
+
+    mockTranslate.mockImplementation(async (t: string) => ({
+      text: t,
+    }));
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate(text, "auto", "en");
+
+    expect(mockTranslate.mock.calls.length).toBe(2);
+    // First chunk should be shorter than MAX_CHUNK_CHARS and split at a newline
+    expect(mockTranslate.mock.calls[0][0].length).toBeLessThanOrEqual(4500);
+  });
+
+  it("should handle Error with cause in error message", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    const err = new Error("outer");
+    err.cause = "inner cause";
+    mockTranslate
+      .mockRejectedValueOnce(err)
+      .mockResolvedValueOnce({ text: "OK" });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate("test", "auto", "en");
+
+    await vi.advanceTimersByTimeAsync(600);
+
+    const result = await promise;
+    expect(result).toBe("OK");
+  });
+
+  it("should pass through specific from language instead of auto", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    mockTranslate.mockResolvedValueOnce({ text: "Hello" });
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate("こんにちは", "ja", "en");
+
+    expect(mockTranslate).toHaveBeenCalledWith("こんにちは", {
+      from: "ja",
+      to: "en",
+      tld: "com",
+      forceBatch: false,
+    });
+  });
 });
