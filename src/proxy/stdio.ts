@@ -29,6 +29,9 @@ export interface StdioProxyStats {
 /**
  * Remove `outputSchema` from tools/list responses to save tokens.
  * Each tool's outputSchema can be large and is not needed by the LLM.
+ *
+ * @param result - The tools/list response result
+ * @returns The same result with outputSchema fields removed from each tool
  */
 function stripOutputSchemas(result: unknown): unknown {
   if (!result || typeof result !== "object") return result;
@@ -53,6 +56,20 @@ export interface StdioProxy {
   start(): Promise<void>;
 }
 
+/**
+ * Create a stdio proxy that wraps an MCP server, intercepting and translating tool results.
+ *
+ * The proxy spawns the MCP server as a child process, pipes stdin/stdout/stderr, and intercepts
+ * JSON-RPC responses. Tool call results are translated to the target language before being
+ * returned to the client.
+ *
+ * @param command - The MCP server command to execute (e.g., "npx")
+ * @param args - Arguments to pass to the command (e.g., ["your-mcp-server"])
+ * @param detector - Language detector for identifying non-target-language text
+ * @param translator - Translation backend (google-free or haiku)
+ * @param targetLang - Target language for translation (e.g., "en")
+ * @returns A stdio proxy instance with a start() method and stats tracking
+ */
 export function createStdioProxy(
   command: string,
   args: readonly string[],
@@ -183,7 +200,10 @@ export function createStdioProxy(
         }
 
         if (!child.stdin || !child.stdout || !child.stderr) {
-          reject(new Error("Failed to open stdio pipes for child process"));
+          reject(new Error(
+            `Failed to open stdio pipes for child process '${command}'. ` +
+            `Verify the command exists and is executable.`
+          ));
           return;
         }
 

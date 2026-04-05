@@ -13,11 +13,15 @@ function createTranslator(config: Config): Translator {
       return createGoogleFreeTranslator();
     case "haiku":
       if (!config.auth) {
-        throw new Error("Auth is required for the 'haiku' backend");
+        throw new Error(
+          "Auth is required for the 'haiku' backend. Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in your environment."
+        );
       }
       return createHaikuTranslator(config.auth, config.haikuModel);
     default:
-      throw new Error(`Unsupported backend: ${config.backend}`);
+      throw new Error(
+        `Unsupported backend: '${config.backend}'. Valid options: 'google-free', 'haiku'`
+      );
   }
 }
 
