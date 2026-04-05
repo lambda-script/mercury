@@ -104,6 +104,10 @@ export function createStdioProxy(
     toolCallsPassedThrough: 0,
   };
 
+  // Shared promise queue for serializing async server message handling.
+  // Hoisted so the exit handler can drain in-flight translations.
+  let serverQueue: Promise<void> = Promise.resolve();
+
   function writeToStdout(message: JsonRpcMessage): void {
     const line = JSON.stringify(message);
     process.stdout.write(line + "\n");
@@ -228,7 +232,6 @@ export function createStdioProxy(
   function setupServerStream(
     child: ChildProcess,
   ): void {
-    let serverQueue: Promise<void> = Promise.resolve();
     const serverReader = createInterface({ input: child.stdout! });
 
     serverReader.on("line", (line) => {
@@ -264,14 +267,17 @@ export function createStdioProxy(
       const reason = signal ? `signal ${signal}` : `code ${code}`;
       logger.info(`Child process exited (${reason})`);
 
-      if (stats.toolCallsTranslated > 0) {
-        logger.info(
-          `[final] Translated ${stats.toolCallsTranslated} tool calls | ` +
-          `total saved: ~${stats.tokensSaved} tok`,
-        );
-      }
+      // Drain any in-flight translations before exiting
+      serverQueue.then(() => {
+        if (stats.toolCallsTranslated > 0) {
+          logger.info(
+            `[final] Translated ${stats.toolCallsTranslated} tool calls | ` +
+            `total saved: ~${stats.tokensSaved} tok`,
+          );
+        }
 
-      process.exit(code ?? 0);
+        process.exit(code ?? 0);
+      });
     });
 
     // Graceful shutdown on signals
@@ -284,7 +290,10 @@ export function createStdioProxy(
 
       logger.info(`Received ${sig}, attempting graceful shutdown...`);
 
-      // Close stdin to signal child to finish
+      // Forward signal to child process so it can clean up
+      child.kill(sig);
+
+      // Also close stdin as a secondary shutdown signal
       child.stdin?.end();
 
       // Wait for graceful exit, then force kill if needed
@@ -292,6 +301,9 @@ export function createStdioProxy(
         logger.warn(`Child did not exit after ${GRACEFUL_SHUTDOWN_TIMEOUT_MS}ms, force killing...`);
         child.kill("SIGKILL");
       }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
+
+      // Don't let the timer keep the event loop alive
+      forceKillTimer.unref();
 
       // Clear timer if child exits gracefully
       child.once("exit", () => {
