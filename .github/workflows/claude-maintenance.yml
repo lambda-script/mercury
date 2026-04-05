@@ -1,12 +1,44 @@
-name: Claude Review
+name: Claude Maintenance
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # 毎日 UTC 0:00 (JST 9:00)
+    - cron: '0 0 * * *'  # Daily at UTC 0:00 (JST 9:00)
   workflow_dispatch:
 
 jobs:
-  review:
+  diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      report: ${{ steps.run.outputs.report }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Collect diagnostics
+        id: run
+        run: |
+          {
+            echo "## npm outdated"
+            npm outdated 2>&1 || true
+            echo ""
+            echo "## npm audit"
+            npm audit 2>&1 || true
+            echo ""
+            echo "## test coverage summary"
+            npm run test:coverage 2>&1 | tail -40 || true
+          } > /tmp/report.txt
+          {
+            echo "report<<DIAG_EOF"
+            cat /tmp/report.txt
+            echo "DIAG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  maintenance:
+    needs: diagnostics
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -15,71 +47,109 @@ jobs:
       issues: write
       id-token: write
       actions: read
-
+    concurrency:
+      group: maintenance-${{ matrix.task }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - task: deps
+            instruction: >
+              Check the npm outdated and npm audit results in the
+              diagnostics. Update outdated dependencies, handling
+              breaking changes. Run `npm test` after each update.
+          - task: test-coverage
+            instruction: >
+              Check the coverage report in the diagnostics. Add
+              meaningful tests under tests/unit/. Focus on edge cases
+              in MCP protocol handling (stdio.ts), tool result
+              transformation (tool-result.ts), and translation backends
+              (google-free.ts, haiku.ts). Test realistic scenarios:
+              malformed JSON-RPC, large responses, concurrent requests,
+              translation failures, tracker TTL expiration.
+          - task: refactor
+            instruction: >
+              Improve code quality. The largest files are
+              src/proxy/stdio.ts (279 lines) and
+              src/transform/tool-result.ts (292 lines). Look for
+              complexity reduction, readability improvements, and
+              duplication removal. Consider the serial promise queue
+              in stdio.ts and the recursive JSON walker in
+              tool-result.ts. Strengthen error handling and reduce
+              single points of failure.
+          - task: docs
+            instruction: >
+              Review documentation from a new contributor's perspective.
+              Ensure README.md and CLAUDE.md accurately reflect the
+              current implementation. Improve error messages to be
+              more actionable. Add JSDoc to exported functions where
+              it aids understanding.
+          - task: robustness
+            instruction: >
+              Mercury wraps MCP servers as a stdio proxy
+              (src/proxy/stdio.ts). Consider real-world edge cases:
+              readline handling of malformed JSON, large tool results
+              exceeding translation chunk limits (4500 chars), Google
+              Translate TLD rotation reliability, request tracker
+              behavior at capacity (1000 entries) and TTL boundaries
+              (60s), child process crashes and signal handling,
+              graceful shutdown. Fix any gaps found.
+          - task: perf
+            instruction: >
+              Profile hot paths: google-free.ts chunk splitting and
+              retry logic, tool-result.ts recursive JSON traversal
+              and string classification (isSkippableValue), stdio.ts
+              readline stream processing, tokens.ts Unicode script
+              detection. Look for unnecessary allocations, redundant
+              parsing, or caching opportunities.
+          - task: review-response
+            instruction: >
+              Run `gh pr list --state open --json number,title` to
+              find open PRs. For each PR, run
+              `gh pr view <number> --comments` to check for review
+              comments. If there are unaddressed review comments,
+              check out the PR branch, address the feedback, commit,
+              and push. Skip PRs with no review comments.
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            You are a developer working on the mercury-mcp repository.
-            Read CLAUDE.md to understand the project architecture and commands.
+            You are a developer working on mercury-mcp.
+            Read CLAUDE.md to understand the project architecture.
 
-            Your job is to improve this project as a real contributor would.
-            Think about what would make this project better, then do it.
+            YOUR TASK: ${{ matrix.instruction }}
 
-            Areas to consider (not limited to these):
+            DIAGNOSTICS (already collected — do NOT re-run npm outdated,
+            npm audit, or npm run test:coverage):
+            ${{ needs.diagnostics.outputs.report }}
 
-            1. **Bug fixes**: Run the test suite (`npm test`), linter
-               (`npm run lint`), and type checker (`npm run typecheck`).
-               If anything fails, fix the root cause.
-            2. **Security**: Check for vulnerabilities with `npm audit`.
-               Apply fixes. Review code for security issues.
-            3. **Code quality**: Look for code that could be clearer,
-               more robust, or better structured. Improve it.
-            4. **Test coverage**: Run `npm run test:coverage`. Identify
-               uncovered or under-tested code paths and add meaningful
-               tests. Aim for comprehensive edge case coverage, not
-               just line coverage.
-            5. **Dependencies**: Run `npm outdated`. Update dependencies,
-               handling breaking changes properly.
-            6. **MCP compatibility**: Mercury wraps arbitrary MCP servers.
-               Think about edge cases across different MCP server
-               implementations — unusual JSON-RPC patterns, large
-               responses, binary content, error handling, timeouts,
-               concurrent requests, etc. If the current implementation
-               doesn't handle a realistic scenario well, fix it.
-            7. **Robustness**: Consider real-world usage patterns.
-               What happens with malformed input? Slow servers?
-               Connection drops? Large payloads? Ensure graceful
-               degradation and clear error messages.
-            8. **Features & improvements**: If you see opportunities for
-               small, valuable improvements (better error messages,
-               edge case handling, performance), implement them.
-            9. **OSS quality**: Review the project from the perspective
-               of a new contributor or user. Are the docs clear? Is
-               the API intuitive? Are error messages helpful? Would
-               someone reading the code understand the design decisions?
-            10. **Documentation**: Keep README.md and CLAUDE.md accurate
-                and up to date with the codebase.
-
-            For each logical change, create a separate branch and PR:
-            - STRICTLY follow Conventional Commits for all commit
-              messages and PR titles: `fix:`, `feat:`, `refactor:`,
-              `test:`, `docs:`, `chore:` (deps/tooling only), `perf:`,
-              `ci:`. Include scope when relevant, e.g. `fix(translator):`
-            - Use `feat!:` or `fix!:` for breaking changes
-            - Keep PRs focused: aim for 10-15 files changed max per PR
-            - If a change touches many files, split by responsibility:
-              e.g., separate "refactor: improve error handling" from
-              "test: add edge case tests for error handling"
-            - Each PR should be independently reviewable and mergeable
-            - Write clear PR descriptions explaining what changed and why
-
-            If no meaningful improvements are found, do nothing.
+            PR GUIDELINES:
+            - You may create multiple PRs if the changes are logically
+              distinct, but keep each PR focused
+            - Each PR MUST have 15 or fewer files changed. If a change
+              is larger, split by responsibility (e.g. separate
+              refactoring from its test additions)
+            - STRICTLY follow Conventional Commits: fix:, feat:,
+              refactor:, test:, docs:, chore:, perf:, ci:
+            - Include scope when relevant, e.g. fix(translator):
+            - Use feat!: or fix!: for breaking changes
+            - Write clear PR descriptions explaining what and why
+            - Run `npm test` after changes to verify nothing breaks
+            - If nothing needs improvement, do nothing
           claude_args: |
             --model claude-sonnet-4-5
             --max-turns 30
