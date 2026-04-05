@@ -232,7 +232,6 @@ export function createStdioProxy(
     const serverReader = createInterface({ input: child.stdout! });
 
     serverReader.on("line", (line) => {
-      const originalLine = line;
       serverQueue = serverQueue.then(async () => {
         const msg = parseJsonRpcLine(line);
         if (!msg) return;
@@ -242,7 +241,7 @@ export function createStdioProxy(
         } catch (err) {
           logger.error(`Error handling server message: ${err instanceof Error ? err.message : String(err)}`);
           // Forward original on error
-          process.stdout.write(originalLine + "\n");
+          process.stdout.write(line + "\n");
         }
       });
     });

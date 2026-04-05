@@ -70,6 +70,35 @@ function isStructuralString(text: string): boolean {
 }
 
 /**
+ * Detect language (first block wins) and record translation stats.
+ * Shared by both JSON-string and plain-text translation paths.
+ */
+async function translateAndRecord(
+  text: string,
+  detector: Detector,
+  translator: Translator,
+  targetLang: string,
+  stats: StatsAccumulator,
+): Promise<string> {
+  if (!stats.detectedLang) {
+    const detected = detector.detect(text);
+    if (detected.confidence > 0) {
+      stats.detectedLang = detected.lang;
+    }
+  }
+
+  stats.blocksTranslated += 1;
+  stats.charsOriginal += text.length;
+  stats.tokensOriginal += estimateTokens(text);
+
+  const translated = await translator.translate(text, "auto", targetLang);
+  stats.charsTransformed += translated.length;
+  stats.tokensTransformed += estimateTokens(translated);
+
+  return translated;
+}
+
+/**
  * Recursively walk a JSON value and translate string values that
  * appear to contain natural language (non-English) text.
  * Returns a new value (never mutates input).
@@ -94,27 +123,10 @@ async function translateJsonStrings(
     if (isCodeBlock(value)) return value;
     if (detector.isTargetLang(value, targetLang)) return value;
 
-    // Detect language
-    if (!stats.detectedLang) {
-      const detected = detector.detect(value);
-      if (detected.confidence > 0) {
-        stats.detectedLang = detected.lang;
-      }
-    }
-
-    stats.blocksTranslated += 1;
-    stats.charsOriginal += value.length;
-    stats.tokensOriginal += estimateTokens(value);
-
-    const translated = await translator.translate(value, "auto", targetLang);
-    stats.charsTransformed += translated.length;
-    stats.tokensTransformed += estimateTokens(translated);
-
-    return translated;
+    return translateAndRecord(value, detector, translator, targetLang, stats);
   }
 
   if (Array.isArray(value)) {
-    // Process array items in parallel for better performance
     return Promise.all(
       value.map((item) =>
         translateJsonStrings(item, detector, translator, targetLang, stats, depth + 1),
@@ -123,11 +135,13 @@ async function translateJsonStrings(
   }
 
   if (typeof value === "object" && value !== null) {
-    const result: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value)) {
-      result[key] = await translateJsonStrings(val, detector, translator, targetLang, stats, depth + 1);
-    }
-    return result;
+    const entries = Object.entries(value);
+    const translatedValues = await Promise.all(
+      entries.map(([, val]) =>
+        translateJsonStrings(val, detector, translator, targetLang, stats, depth + 1),
+      ),
+    );
+    return Object.fromEntries(entries.map(([key], i) => [key, translatedValues[i]]));
   }
 
   // numbers, booleans, null — pass through
@@ -147,23 +161,7 @@ async function translatePlainText(
     return text;
   }
 
-  // Detect language (first block wins)
-  if (!stats.detectedLang) {
-    const detected = detector.detect(text);
-    if (detected.confidence > 0) {
-      stats.detectedLang = detected.lang;
-    }
-  }
-
-  stats.blocksTranslated += 1;
-  stats.charsOriginal += text.length;
-  stats.tokensOriginal += estimateTokens(text);
-
-  const translated = await translator.translate(text, "auto", targetLang);
-  stats.charsTransformed += translated.length;
-  stats.tokensTransformed += estimateTokens(translated);
-
-  return translated;
+  return translateAndRecord(text, detector, translator, targetLang, stats);
 }
 
 /**
