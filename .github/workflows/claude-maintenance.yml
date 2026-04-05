@@ -152,5 +152,4 @@ jobs:
             - If nothing needs improvement, do nothing
           claude_args: |
             --model claude-sonnet-4-5
-            --max-turns 50
             --allowedTools "Edit,Write,Read,Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(git:*),Bash(gh issue:*),Bash(gh pr:*),Bash(cat:*),Bash(ls:*),Bash(find:*),Bash(grep:*)"
