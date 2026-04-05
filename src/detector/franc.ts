@@ -28,6 +28,16 @@ function detectByScript(text: string): string | null {
   return null;
 }
 
+/**
+ * Create a language detector using franc (trigram analysis) with Unicode script fallback.
+ *
+ * Detection strategy:
+ * - Short text (< minLength): Unicode script-based detection (Hiragana/Katakana → Japanese, etc.)
+ * - Long text: franc trigram analysis, with kana override for Japanese vs Chinese disambiguation
+ *
+ * @param minLength - Minimum text length for franc detection (shorter text uses script-based detection)
+ * @returns A detector instance
+ */
 export function createFrancDetector(minLength: number): Detector {
   return {
     detect(text: string): DetectResult {

@@ -40,7 +40,7 @@ jobs:
   maintenance:
     needs: diagnostics
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: write
       pull-requests: write
@@ -151,6 +151,5 @@ jobs:
             - Run `npm test` after changes to verify nothing breaks
             - If nothing needs improvement, do nothing
           claude_args: |
-            --model claude-sonnet-4-5
-            --max-turns 30
+            --model claude-opus-4-6
             --allowedTools "Edit,Write,Read,Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(git:*),Bash(gh issue:*),Bash(gh pr:*),Bash(cat:*),Bash(ls:*),Bash(find:*),Bash(grep:*)"

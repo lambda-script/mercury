@@ -13,6 +13,12 @@ export interface Config {
   readonly haikuModel: string;
 }
 
+/**
+ * Load Mercury configuration from environment variables.
+ *
+ * @returns Configuration object with translation backend, auth, and language settings
+ * @throws {Error} If haiku backend is selected but no ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is provided
+ */
 export function loadConfig(): Config {
   const backend = (process.env.MERCURY_BACKEND as TranslationBackend) ?? "google-free";
 
@@ -28,7 +34,8 @@ export function loadConfig(): Config {
 
   if (backend === "haiku" && !auth) {
     throw new Error(
-      "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is required when using the 'haiku' backend",
+      "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is required when using the 'haiku' backend. " +
+      "Set one of these in the 'env' field of your .mcp.json configuration."
     );
   }
 
