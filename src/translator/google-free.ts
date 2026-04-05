@@ -99,6 +99,17 @@ async function translateChunk(
   return text;
 }
 
+/**
+ * Create a Google Translate (free) translator using google-translate-api-x.
+ *
+ * Features:
+ * - No API key required
+ * - Automatic chunking at paragraph/sentence boundaries (max 4500 chars per chunk)
+ * - Retry with TLD rotation (com, co.jp, co.uk) and exponential backoff (3 attempts)
+ * - Graceful degradation: Returns original text if all attempts fail
+ *
+ * @returns A translator instance
+ */
 export function createGoogleFreeTranslator(): Translator {
   return {
     async translate(text: string, from: string, to: string): Promise<string> {
