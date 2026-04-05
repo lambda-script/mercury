@@ -19,6 +19,25 @@ function isValidJsonRpcMessage(value: unknown): value is JsonRpcMessage {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Parse a line of text as JSON-RPC message.
+ * Returns null if invalid or not a valid JSON-RPC message.
+ */
+function parseJsonRpcLine(line: string): JsonRpcMessage | null {
+  if (!line.trim()) return null;
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    if (!isValidJsonRpcMessage(parsed)) {
+      logger.debug("Non-object JSON, dropping");
+      return null;
+    }
+    return parsed as JsonRpcMessage;
+  } catch {
+    logger.debug("Non-JSON line, dropping");
+    return null;
+  }
+}
+
 export interface StdioProxyStats {
   requestCount: number;
   tokensSaved: number;
@@ -165,6 +184,108 @@ export function createStdioProxy(
     childStdin.write(line + "\n");
   }
 
+  /**
+   * Setup stream from client (stdin) to child process.
+   */
+  function setupClientStream(
+    child: ChildProcess,
+  ): void {
+    const clientReader = createInterface({ input: process.stdin });
+    clientReader.on("line", (line) => {
+      const msg = parseJsonRpcLine(line);
+      if (msg && child.stdin) {
+        handleClientMessage(msg, child.stdin);
+      }
+    });
+
+    // Close child stdin when our stdin ends
+    process.stdin.on("end", () => {
+      child.stdin?.end();
+    });
+  }
+
+  /**
+   * Setup stream from child process (stdout) to client, with translation.
+   * Uses a serial promise queue to preserve message ordering during async translation.
+   */
+  function setupServerStream(
+    child: ChildProcess,
+  ): void {
+    let serverQueue: Promise<void> = Promise.resolve();
+    const serverReader = createInterface({ input: child.stdout! });
+
+    serverReader.on("line", (line) => {
+      const originalLine = line;
+      serverQueue = serverQueue.then(async () => {
+        const msg = parseJsonRpcLine(line);
+        if (!msg) return;
+
+        try {
+          await handleServerMessage(msg);
+        } catch (err) {
+          logger.error(`Error handling server message: ${err instanceof Error ? err.message : String(err)}`);
+          // Forward original on error
+          process.stdout.write(originalLine + "\n");
+        }
+      });
+    });
+  }
+
+  /**
+   * Setup process lifecycle handlers: error, exit, signals.
+   */
+  function setupProcessLifecycle(
+    child: ChildProcess,
+    reject: (err: Error) => void,
+  ): void {
+    child.on("error", (err) => {
+      logger.error(`Child process error: ${err.message}`);
+      reject(err);
+    });
+
+    child.on("exit", (code, signal) => {
+      const reason = signal ? `signal ${signal}` : `code ${code}`;
+      logger.info(`Child process exited (${reason})`);
+
+      if (stats.toolCallsTranslated > 0) {
+        logger.info(
+          `[final] Translated ${stats.toolCallsTranslated} tool calls | ` +
+          `total saved: ~${stats.tokensSaved} tok`,
+        );
+      }
+
+      process.exit(code ?? 0);
+    });
+
+    // Graceful shutdown on signals
+    let shutdownInProgress = false;
+    const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 5000;
+
+    const shutdown = (sig: NodeJS.Signals) => {
+      if (shutdownInProgress) return;
+      shutdownInProgress = true;
+
+      logger.info(`Received ${sig}, attempting graceful shutdown...`);
+
+      // Close stdin to signal child to finish
+      child.stdin?.end();
+
+      // Wait for graceful exit, then force kill if needed
+      const forceKillTimer = setTimeout(() => {
+        logger.warn(`Child did not exit after ${GRACEFUL_SHUTDOWN_TIMEOUT_MS}ms, force killing...`);
+        child.kill("SIGKILL");
+      }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
+
+      // Clear timer if child exits gracefully
+      child.once("exit", () => {
+        clearTimeout(forceKillTimer);
+      });
+    };
+
+    process.once("SIGINT", () => shutdown("SIGINT"));
+    process.once("SIGTERM", () => shutdown("SIGTERM"));
+  }
+
   return {
     stats,
 
@@ -189,87 +310,13 @@ export function createStdioProxy(
 
         logger.info(`Started child process: ${command} ${args.join(" ")} (pid: ${child.pid})`);
 
-        // Stream 1: stdin → child stdin (client to server)
-        const clientReader = createInterface({ input: process.stdin });
-        clientReader.on("line", (line) => {
-          if (!line.trim()) return;
-          try {
-            const parsed = JSON.parse(line) as unknown;
-            if (!isValidJsonRpcMessage(parsed)) {
-              logger.debug("Non-object JSON from client, dropping");
-              return;
-            }
-            if (child.stdin) {
-              handleClientMessage(parsed as JsonRpcMessage, child.stdin);
-            }
-          } catch {
-            // Not valid JSON — drop; JSON-RPC requires valid JSON
-            logger.debug("Non-JSON line from client, dropping");
-          }
-        });
-
-        // Stream 2: child stdout → stdout (server to client, with translation)
-        // Use a serial promise queue to preserve message ordering.
-        // Translation is async, so without queuing, fast responses could
-        // overtake slower ones that are being translated.
-        let serverQueue: Promise<void> = Promise.resolve();
-        const serverReader = createInterface({ input: child.stdout });
-        serverReader.on("line", (line) => {
-          if (!line.trim()) return;
-          serverQueue = serverQueue.then(() => {
-            try {
-              const parsed = JSON.parse(line) as unknown;
-              if (!isValidJsonRpcMessage(parsed)) {
-                logger.debug("Non-object JSON from server, dropping");
-                return Promise.resolve();
-              }
-              return handleServerMessage(parsed as JsonRpcMessage).catch((err) => {
-                logger.error(`Error handling server message: ${err instanceof Error ? err.message : String(err)}`);
-                // Forward original on error
-                process.stdout.write(line + "\n");
-              });
-            } catch {
-              // Not valid JSON — drop
-              logger.debug("Non-JSON line from server, dropping");
-              return Promise.resolve();
-            }
-          });
-        });
-
-        // Stream 3: child stderr → stderr (pass through)
+        // Setup I/O streams
+        setupClientStream(child);
+        setupServerStream(child);
         child.stderr.pipe(process.stderr);
 
-        child.on("error", (err) => {
-          logger.error(`Child process error: ${err.message}`);
-          reject(err);
-        });
-
-        child.on("exit", (code, signal) => {
-          const reason = signal ? `signal ${signal}` : `code ${code}`;
-          logger.info(`Child process exited (${reason})`);
-
-          if (stats.toolCallsTranslated > 0) {
-            logger.info(
-              `[final] Translated ${stats.toolCallsTranslated} tool calls | ` +
-              `total saved: ~${stats.tokensSaved} tok`,
-            );
-          }
-
-          process.exit(code ?? 0);
-        });
-
-        // Close child stdin when our stdin ends
-        process.stdin.on("end", () => {
-          child.stdin?.end();
-        });
-
-        // Signal handling — use `once` to avoid handler accumulation
-        const shutdown = (sig: NodeJS.Signals) => {
-          logger.info(`Received ${sig}, shutting down child process...`);
-          child.kill(sig);
-        };
-        process.once("SIGINT", () => shutdown("SIGINT"));
-        process.once("SIGTERM", () => shutdown("SIGTERM"));
+        // Setup lifecycle handlers
+        setupProcessLifecycle(child, reject);
 
         // Resolve immediately — the proxy is running
         resolve();
