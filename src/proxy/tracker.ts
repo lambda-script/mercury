@@ -34,11 +34,24 @@ export function createRequestTracker(): RequestTracker {
   return {
     track(id: string | number, method: string): void {
       evictExpired();
+
       // Drop oldest entry if at capacity
       if (pending.size >= MAX_PENDING) {
-        const firstKey = pending.keys().next().value;
-        if (firstKey !== undefined) pending.delete(firstKey);
+        let oldestKey: string | number | undefined;
+        let oldestTs = Number.MAX_SAFE_INTEGER;
+
+        for (const [id, entry] of pending) {
+          if (entry.ts < oldestTs) {
+            oldestTs = entry.ts;
+            oldestKey = id;
+          }
+        }
+
+        if (oldestKey !== undefined) {
+          pending.delete(oldestKey);
+        }
       }
+
       pending.set(id, { method, ts: Date.now() });
     },
 
