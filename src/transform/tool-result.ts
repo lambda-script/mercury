@@ -36,6 +36,9 @@ const MAX_JSON_CHECK_BYTES = 64 * 1024;
 // Short strings (keys, IDs, URLs) are not worth the overhead.
 const MIN_JSON_STRING_LENGTH = 20;
 
+// Maximum recursion depth for JSON walker (prevent stack overflow).
+const MAX_JSON_DEPTH = 50;
+
 // Heuristic: does the text look like a markdown code block?
 function isCodeBlock(text: string): boolean {
   return text.trimStart().startsWith("```");
@@ -77,7 +80,13 @@ async function translateJsonStrings(
   translator: Translator,
   targetLang: string,
   stats: StatsAccumulator,
+  depth = 0,
 ): Promise<unknown> {
+  // Prevent stack overflow on deeply nested JSON
+  if (depth > MAX_JSON_DEPTH) {
+    logger.debug(`Max depth ${MAX_JSON_DEPTH} exceeded, stopping translation`);
+    return value;
+  }
   if (typeof value === "string") {
     // Skip short, structural, or already-target-lang strings
     if (value.length < MIN_JSON_STRING_LENGTH) return value;
@@ -105,17 +114,18 @@ async function translateJsonStrings(
   }
 
   if (Array.isArray(value)) {
-    const result: unknown[] = [];
-    for (const item of value) {
-      result.push(await translateJsonStrings(item, detector, translator, targetLang, stats));
-    }
-    return result;
+    // Process array items in parallel for better performance
+    return Promise.all(
+      value.map((item) =>
+        translateJsonStrings(item, detector, translator, targetLang, stats, depth + 1),
+      ),
+    );
   }
 
   if (typeof value === "object" && value !== null) {
     const result: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value)) {
-      result[key] = await translateJsonStrings(val, detector, translator, targetLang, stats);
+      result[key] = await translateJsonStrings(val, detector, translator, targetLang, stats, depth + 1);
     }
     return result;
   }
