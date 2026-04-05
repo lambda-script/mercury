@@ -218,6 +218,22 @@ interface McpToolResult {
   readonly [key: string]: unknown;
 }
 
+/**
+ * Transform an MCP tool result by translating non-target-language text to the target language.
+ *
+ * Translation logic:
+ * - Text blocks: Translates non-target-language text, skips code blocks (```)
+ * - JSON content: Recursively walks structure and translates natural-language string values
+ *   (skips URLs, file paths, dates, short identifiers)
+ * - Image/resource blocks: Pass through unchanged
+ * - Error results: Pass through unchanged (preserves original error text)
+ *
+ * @param result - The MCP tool result object (with content array)
+ * @param detector - Language detector for identifying text language
+ * @param translator - Translation backend
+ * @param targetLang - Target language code (e.g., "en")
+ * @returns Transformed result with translated content and statistics (tokens saved, blocks translated)
+ */
 export async function transformToolResult(
   result: unknown,
   detector: Detector,
@@ -272,6 +288,13 @@ export async function transformToolResult(
   };
 }
 
+/**
+ * Format transformation statistics as a human-readable log message.
+ *
+ * @param stats - Transform statistics from transformToolResult
+ * @returns Formatted string showing detected language, blocks translated/skipped, and token reduction
+ * @example "[Japanese] Translated 3 blocks (1 skipped) | ~2538 -> ~1488 tok (-41.0%)"
+ */
 export function formatTransformStats(stats: TransformStats): string {
   const lang = stats.detectedLang
     ? (LANG_NAMES[stats.detectedLang] ?? stats.detectedLang)

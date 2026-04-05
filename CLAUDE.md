@@ -53,6 +53,14 @@ Mercury wraps an MCP server as a stdio proxy, intercepting JSON-RPC 2.0 messages
 
 All interfaces use `readonly` properties. Transform functions return new objects via spread, never mutating inputs.
 
+## Testing
+
+- **Unit tests**: `npm test` (vitest, 80% coverage threshold enforced)
+- **Single test file**: `npx vitest run tests/unit/config.test.ts`
+- **Watch mode**: `npm run test:watch`
+- All code paths should be tested except for error handling in external dependencies (translation APIs, child process failures)
+- Prefer unit tests with mocked dependencies over integration tests
+
 ## Release Workflow
 
 1. Merge PRs with Conventional Commit titles to `main`

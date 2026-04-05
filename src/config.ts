@@ -13,6 +13,12 @@ export interface Config {
   readonly haikuModel: string;
 }
 
+/**
+ * Load Mercury configuration from environment variables.
+ *
+ * @returns Configuration object with translation backend, auth, and language settings
+ * @throws {Error} If haiku backend is selected but no ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is provided
+ */
 export function loadConfig(): Config {
   const backend = (process.env.MERCURY_BACKEND as TranslationBackend) ?? "google-free";
 

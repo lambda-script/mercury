@@ -8,6 +8,12 @@ const ISO1_TO_ISO3: Readonly<Record<string, string>> = {
   ms: "msa",
 };
 
+/**
+ * Convert ISO 639-1 language code to ISO 639-3 code (used by franc).
+ *
+ * @param lang - ISO 639-1 code (e.g., "en") or ISO 639-3 code (pass-through)
+ * @returns ISO 639-3 code (e.g., "eng")
+ */
 export function toIso3(lang: string): string {
   return ISO1_TO_ISO3[lang] ?? lang;
 }
