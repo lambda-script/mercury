@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/lambda-script/mercury/compare/v1.0.0...v1.0.1) (2026-04-05)
+
+
+### Bug Fixes
+
+* **proxy:** correct tracker eviction to remove oldest entry by timestamp ([#15](https://github.com/lambda-script/mercury/issues/15)) ([de58e52](https://github.com/lambda-script/mercury/commit/de58e528f9320aacc8a6fa8432c8a80a13253fd3))
+
 ## 1.0.0 (2026-04-04)
 
 
