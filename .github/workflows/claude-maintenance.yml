@@ -1,0 +1,86 @@
+name: Claude Review
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 毎日 UTC 0:00 (JST 9:00)
+  workflow_dispatch:
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are a developer working on the mercury-mcp repository.
+            Read CLAUDE.md to understand the project architecture and commands.
+
+            Your job is to improve this project as a real contributor would.
+            Think about what would make this project better, then do it.
+
+            Areas to consider (not limited to these):
+
+            1. **Bug fixes**: Run the test suite (`npm test`), linter
+               (`npm run lint`), and type checker (`npm run typecheck`).
+               If anything fails, fix the root cause.
+            2. **Security**: Check for vulnerabilities with `npm audit`.
+               Apply fixes. Review code for security issues.
+            3. **Code quality**: Look for code that could be clearer,
+               more robust, or better structured. Improve it.
+            4. **Test coverage**: Run `npm run test:coverage`. Identify
+               uncovered or under-tested code paths and add meaningful
+               tests. Aim for comprehensive edge case coverage, not
+               just line coverage.
+            5. **Dependencies**: Run `npm outdated`. Update dependencies,
+               handling breaking changes properly.
+            6. **MCP compatibility**: Mercury wraps arbitrary MCP servers.
+               Think about edge cases across different MCP server
+               implementations — unusual JSON-RPC patterns, large
+               responses, binary content, error handling, timeouts,
+               concurrent requests, etc. If the current implementation
+               doesn't handle a realistic scenario well, fix it.
+            7. **Robustness**: Consider real-world usage patterns.
+               What happens with malformed input? Slow servers?
+               Connection drops? Large payloads? Ensure graceful
+               degradation and clear error messages.
+            8. **Features & improvements**: If you see opportunities for
+               small, valuable improvements (better error messages,
+               edge case handling, performance), implement them.
+            9. **OSS quality**: Review the project from the perspective
+               of a new contributor or user. Are the docs clear? Is
+               the API intuitive? Are error messages helpful? Would
+               someone reading the code understand the design decisions?
+            10. **Documentation**: Keep README.md and CLAUDE.md accurate
+                and up to date with the codebase.
+
+            For each logical change, create a separate branch and PR:
+            - STRICTLY follow Conventional Commits for all commit
+              messages and PR titles: `fix:`, `feat:`, `refactor:`,
+              `test:`, `docs:`, `chore:` (deps/tooling only), `perf:`,
+              `ci:`. Include scope when relevant, e.g. `fix(translator):`
+            - Use `feat!:` or `fix!:` for breaking changes
+            - Keep PRs focused: aim for 10-15 files changed max per PR
+            - If a change touches many files, split by responsibility:
+              e.g., separate "refactor: improve error handling" from
+              "test: add edge case tests for error handling"
+            - Each PR should be independently reviewable and mergeable
+            - Write clear PR descriptions explaining what changed and why
+
+            If no meaningful improvements are found, do nothing.
+          claude_args: |
+            --model claude-sonnet-4-5
+            --max-turns 30
+            --allowedTools "Edit,Write,Read,Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(git:*),Bash(gh issue:*),Bash(gh pr:*),Bash(cat:*),Bash(ls:*),Bash(find:*),Bash(grep:*)"
