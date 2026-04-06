@@ -14,48 +14,41 @@
  * @param text - Text to estimate token count for
  * @returns Estimated token count (rounded to nearest integer)
  */
-
-// Unicode ranges for high-token-cost scripts
-const CJK_PATTERN = /[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/g;
-const CYRILLIC_PATTERN = /[\u0400-\u04FF]/g;
-const ARABIC_PATTERN = /[\u0600-\u06FF]/g;
-const DEVANAGARI_PATTERN = /[\u0900-\u097F\u0980-\u09FF]/g;
-const THAI_PATTERN = /[\u0E00-\u0E7F]/g;
-
 export function estimateTokens(text: string): number {
-  if (text.length === 0) return 0;
+  const len = text.length;
+  if (len === 0) return 0;
 
   let tokens = 0;
-  let nonLatinChars = 0;
 
-  // CJK (Japanese, Chinese, Korean): ~1.5 tokens per character
-  const cjkCount = (text.match(CJK_PATTERN) ?? []).length;
-  tokens += cjkCount * 1.5;
-  nonLatinChars += cjkCount;
+  for (let i = 0; i < len; i++) {
+    const cp = text.charCodeAt(i);
 
-  // Cyrillic: ~0.5 tokens per character
-  const cyrCount = (text.match(CYRILLIC_PATTERN) ?? []).length;
-  tokens += cyrCount * 0.5;
-  nonLatinChars += cyrCount;
-
-  // Arabic: ~1.2 tokens per character
-  const araCount = (text.match(ARABIC_PATTERN) ?? []).length;
-  tokens += araCount * 1.2;
-  nonLatinChars += araCount;
-
-  // Devanagari/Bengali: ~1.5 tokens per character
-  const devCount = (text.match(DEVANAGARI_PATTERN) ?? []).length;
-  tokens += devCount * 1.5;
-  nonLatinChars += devCount;
-
-  // Thai: ~1.0 tokens per character
-  const thaiCount = (text.match(THAI_PATTERN) ?? []).length;
-  tokens += thaiCount * 1.0;
-  nonLatinChars += thaiCount;
-
-  // Remaining characters (Latin, digits, punctuation, whitespace): ~0.25 tokens per char
-  const latinChars = text.length - nonLatinChars;
-  tokens += latinChars * 0.25;
+    if (
+      (cp >= 0x3040 && cp <= 0x309f) || // Hiragana
+      (cp >= 0x30a0 && cp <= 0x30ff) || // Katakana
+      (cp >= 0x4e00 && cp <= 0x9fff) || // CJK Unified Ideographs
+      (cp >= 0xac00 && cp <= 0xd7af)    // Hangul Syllables
+    ) {
+      tokens += 1.5;
+    } else if (cp >= 0x0400 && cp <= 0x04ff) {
+      // Cyrillic
+      tokens += 0.5;
+    } else if (cp >= 0x0600 && cp <= 0x06ff) {
+      // Arabic
+      tokens += 1.2;
+    } else if (
+      (cp >= 0x0900 && cp <= 0x097f) || // Devanagari
+      (cp >= 0x0980 && cp <= 0x09ff)    // Bengali
+    ) {
+      tokens += 1.5;
+    } else if (cp >= 0x0e00 && cp <= 0x0e7f) {
+      // Thai
+      tokens += 1.0;
+    } else {
+      // Latin, digits, punctuation, whitespace
+      tokens += 0.25;
+    }
+  }
 
   return Math.round(tokens);
 }
