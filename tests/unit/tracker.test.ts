@@ -60,50 +60,6 @@ describe("RequestTracker", () => {
     expect(tracker.take(1)).toBe("tools/list");
   });
 
-  describe("capacity eviction", () => {
-    it("should evict oldest entry when at max capacity (1000)", () => {
-      const tracker = createRequestTracker();
-
-      // Fill to capacity
-      for (let i = 0; i < 1000; i++) {
-        tracker.track(i, "tools/call");
-      }
-      expect(tracker.size).toBe(1000);
-
-      // Adding one more should evict the oldest (id=0)
-      tracker.track(1000, "tools/call");
-      expect(tracker.size).toBe(1000);
-      expect(tracker.take(0)).toBeUndefined();
-      expect(tracker.take(1000)).toBe("tools/call");
-      // id=1 should still be there (second oldest, not evicted)
-      expect(tracker.take(1)).toBe("tools/call");
-    });
-
-    it("should evict expired entries before checking capacity", () => {
-      vi.useFakeTimers();
-      const tracker = createRequestTracker();
-
-      // Add entries that will expire
-      for (let i = 0; i < 500; i++) {
-        tracker.track(i, "tools/call");
-      }
-
-      // Advance past TTL
-      vi.advanceTimersByTime(61_000);
-
-      // Add more entries (expired ones should be cleaned first)
-      for (let i = 500; i < 1000; i++) {
-        tracker.track(i, "tools/call");
-      }
-
-      // Expired entries should be gone
-      expect(tracker.take(0)).toBeUndefined();
-      // Recent entries should still be there
-      expect(tracker.take(999)).toBe("tools/call");
-      vi.useRealTimers();
-    });
-  });
-
   describe("TTL eviction", () => {
     beforeEach(() => {
       vi.useFakeTimers();
@@ -135,6 +91,45 @@ describe("RequestTracker", () => {
       tracker.track(2, "tools/list");
 
       expect(tracker.take(1)).toBe("tools/call");
+    });
+  });
+
+  describe("capacity eviction", () => {
+    it("should evict the oldest entry when at max capacity (1000)", () => {
+      const tracker = createRequestTracker();
+
+      // Fill to capacity
+      for (let i = 0; i < 1000; i++) {
+        tracker.track(i, "tools/call");
+      }
+      expect(tracker.size).toBe(1000);
+
+      // Adding one more should evict the oldest (id=0)
+      tracker.track(1000, "tools/list");
+      expect(tracker.size).toBe(1000);
+      expect(tracker.take(0)).toBeUndefined();
+      expect(tracker.take(1000)).toBe("tools/list");
+      expect(tracker.take(1)).toBe("tools/call");
+    });
+
+    it("should evict expired entries before checking capacity", () => {
+      vi.useFakeTimers();
+      const tracker = createRequestTracker();
+
+      // Add 999 entries
+      for (let i = 0; i < 999; i++) {
+        tracker.track(i, "tools/call");
+      }
+
+      // Advance past TTL so all expire
+      vi.advanceTimersByTime(61_000);
+
+      // This should evict all expired entries first, so no capacity eviction needed
+      tracker.track(999, "tools/list");
+      expect(tracker.size).toBe(1);
+      expect(tracker.take(999)).toBe("tools/list");
+
+      vi.useRealTimers();
     });
   });
 });
