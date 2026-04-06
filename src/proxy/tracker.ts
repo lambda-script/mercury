@@ -21,6 +21,9 @@ export interface RequestTracker {
   readonly size: number;
 }
 
+/**
+ * Create a request tracker with automatic expiry (60s TTL) and capacity limit (1000 entries).
+ */
 export function createRequestTracker(): RequestTracker {
   const pending = new Map<string | number, TrackerEntry>();
 

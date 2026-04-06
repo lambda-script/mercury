@@ -13,18 +13,20 @@ Non-English languages consume significantly more tokens than English due to toke
 ```
 Claude Code ──→ mercury (stdio proxy) ──→ MCP Server
                  ├─ Intercept JSON-RPC tool results
-                 ├─ Language Detection (franc)
+                 ├─ Language Detection (franc + Unicode script fallback)
                  ├─ Translation (Google Translate / Claude Haiku)
+                 ├─ Strip outputSchema from tools/list responses
                  └─ Skip code blocks, error results; translate strings inside JSON
 ```
 
 1. Wraps an MCP server command as a stdio proxy
 2. Intercepts JSON-RPC `tools/call` responses from the child MCP server
-3. Detects non-English text in tool result content blocks
+3. Detects non-English text using franc trigram analysis (long text) or Unicode script detection (short text)
 4. Translates text blocks to English using the configured backend
-5. For JSON content, walks the structure and translates natural-language string values
-6. Passes through code blocks, images, and error results untouched
-7. Returns the translated result to Claude Code
+5. For JSON content, walks the structure and translates natural-language string values (skips URLs, file paths, dates, short identifiers)
+6. Strips `outputSchema` from `tools/list` responses to save tokens
+7. Passes through code blocks, images, and error results untouched
+8. Returns the translated result to Claude Code
 
 ## Requirements
 

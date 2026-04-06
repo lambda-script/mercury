@@ -6,6 +6,7 @@ import { createRequestTracker, type RequestTracker } from "./tracker.js";
 import { transformToolResult, formatTransformStats } from "../transform/tool-result.js";
 import { logger } from "../utils/logger.js";
 
+/** A JSON-RPC 2.0 message (request, response, or notification). */
 export interface JsonRpcMessage {
   readonly jsonrpc: "2.0";
   readonly id?: string | number;
@@ -38,10 +39,15 @@ function parseJsonRpcLine(line: string): JsonRpcMessage | null {
   }
 }
 
+/** Cumulative statistics for the stdio proxy session. */
 export interface StdioProxyStats {
+  /** Total tool call responses processed. */
   requestCount: number;
+  /** Estimated total tokens saved by translation across all tool calls. */
   tokensSaved: number;
+  /** Number of tool calls where translation was applied. */
   toolCallsTranslated: number;
+  /** Number of tool calls where text was already in target language (no translation needed). */
   toolCallsPassedThrough: number;
 }
 
@@ -70,8 +76,11 @@ function stripOutputSchemas(result: unknown): unknown {
   return { ...obj, tools: strippedTools };
 }
 
+/** MCP stdio proxy that intercepts and translates tool results. */
 export interface StdioProxy {
+  /** Cumulative session statistics. */
   readonly stats: StdioProxyStats;
+  /** Start the proxy. Spawns the child process and begins intercepting messages. */
   start(): Promise<void>;
 }
 
