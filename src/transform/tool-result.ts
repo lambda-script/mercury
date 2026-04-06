@@ -4,16 +4,25 @@ import { LANG_NAMES } from "../utils/lang.js";
 import { logger } from "../utils/logger.js";
 import { estimateTokens } from "../utils/tokens.js";
 
+/** Statistics from transforming a single MCP tool result. */
 export interface TransformStats {
+  /** Number of content blocks that were translated. */
   readonly blocksTranslated: number;
+  /** Number of content blocks skipped (code blocks, already target language). */
   readonly blocksSkipped: number;
+  /** Total characters in original text before translation. */
   readonly charsOriginal: number;
+  /** Total characters in translated text. */
   readonly charsTransformed: number;
+  /** Estimated token count of original text (used for savings calculation). */
   readonly tokensOriginal: number;
+  /** Estimated token count of translated text. */
   readonly tokensTransformed: number;
+  /** ISO 639-3 code of the first detected non-target language, or null if none detected. */
   readonly detectedLang: string | null;
 }
 
+/** Result of transforming an MCP tool result: the (possibly translated) content and transform statistics. */
 export interface ToolResultTransformResult {
   readonly content: unknown;
   readonly stats: TransformStats;
