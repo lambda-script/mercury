@@ -454,6 +454,7 @@ describe("stdio proxy - createStdioProxy", () => {
     await proxy.start();
 
     childEmitter.emit("exit", 0, null);
+    await new Promise((r) => setTimeout(r, 50));
 
     expect(process.exit).toHaveBeenCalledWith(0);
     cleanup();
@@ -464,6 +465,7 @@ describe("stdio proxy - createStdioProxy", () => {
     await proxy.start();
 
     childEmitter.emit("exit", 1, null);
+    await new Promise((r) => setTimeout(r, 50));
 
     expect(process.exit).toHaveBeenCalledWith(1);
     cleanup();
@@ -474,8 +476,9 @@ describe("stdio proxy - createStdioProxy", () => {
     await proxy.start();
 
     childEmitter.emit("exit", null, "SIGTERM");
+    await new Promise((r) => setTimeout(r, 50));
 
-    expect(process.exit).toHaveBeenCalledWith(0);
+    expect(process.exit).toHaveBeenCalledWith(143); // 128 + SIGTERM (15)
     cleanup();
   });
 
