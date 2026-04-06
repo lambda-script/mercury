@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { constants } from "node:os";
 import { createInterface } from "node:readline";
 import type { Detector } from "../detector/index.js";
 import type { Translator } from "../translator/index.js";
@@ -6,6 +7,7 @@ import { createRequestTracker, type RequestTracker } from "./tracker.js";
 import { transformToolResult, formatTransformStats } from "../transform/tool-result.js";
 import { logger } from "../utils/logger.js";
 
+/** A JSON-RPC 2.0 message (request, response, or notification). */
 export interface JsonRpcMessage {
   readonly jsonrpc: "2.0";
   readonly id?: string | number;
@@ -38,10 +40,15 @@ function parseJsonRpcLine(line: string): JsonRpcMessage | null {
   }
 }
 
+/** Cumulative statistics for the stdio proxy session. */
 export interface StdioProxyStats {
+  /** Total tool call responses processed. */
   requestCount: number;
+  /** Estimated total tokens saved by translation across all tool calls. */
   tokensSaved: number;
+  /** Number of tool calls where translation was applied. */
   toolCallsTranslated: number;
+  /** Number of tool calls where text was already in target language (no translation needed). */
   toolCallsPassedThrough: number;
 }
 
@@ -52,7 +59,7 @@ export interface StdioProxyStats {
  * @param result - The tools/list response result
  * @returns The same result with outputSchema fields removed from each tool
  */
-function stripOutputSchemas(result: unknown): unknown {
+export function stripOutputSchemas(result: unknown): unknown {
   if (!result || typeof result !== "object") return result;
 
   const obj = result as Record<string, unknown>;
@@ -70,8 +77,11 @@ function stripOutputSchemas(result: unknown): unknown {
   return { ...obj, tools: strippedTools };
 }
 
+/** MCP stdio proxy that intercepts and translates tool results. */
 export interface StdioProxy {
+  /** Cumulative session statistics. */
   readonly stats: StdioProxyStats;
+  /** Start the proxy. Spawns the child process and begins intercepting messages. */
   start(): Promise<void>;
 }
 
@@ -104,8 +114,8 @@ export function createStdioProxy(
     toolCallsPassedThrough: 0,
   };
 
-  // Shared promise queue for serializing async server message handling.
-  // Hoisted so the exit handler can drain in-flight translations.
+  // Promise queue for serializing async server message handling.
+  // Hoisted here so the exit handler can drain in-flight translations.
   let serverQueue: Promise<void> = Promise.resolve();
 
   function writeToStdout(message: JsonRpcMessage): void {
@@ -235,7 +245,6 @@ export function createStdioProxy(
     const serverReader = createInterface({ input: child.stdout! });
 
     serverReader.on("line", (line) => {
-      const originalLine = line;
       serverQueue = serverQueue.then(async () => {
         const msg = parseJsonRpcLine(line);
         if (!msg) return;
@@ -245,8 +254,10 @@ export function createStdioProxy(
         } catch (err) {
           logger.error(`Error handling server message: ${err instanceof Error ? err.message : String(err)}`);
           // Forward original on error
-          process.stdout.write(originalLine + "\n");
+          process.stdout.write(line + "\n");
         }
+      }).catch((err) => {
+        logger.error(`Unexpected queue error: ${err instanceof Error ? err.message : String(err)}`);
       });
     });
   }
@@ -263,26 +274,43 @@ export function createStdioProxy(
       reject(err);
     });
 
+    // Graceful shutdown on signals
+    let shutdownInProgress = false;
+    const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 5000;
+
     child.on("exit", (code, signal) => {
       const reason = signal ? `signal ${signal}` : `code ${code}`;
       logger.info(`Child process exited (${reason})`);
 
-      // Drain any in-flight translations before exiting
-      serverQueue.then(() => {
-        if (stats.toolCallsTranslated > 0) {
-          logger.info(
-            `[final] Translated ${stats.toolCallsTranslated} tool calls | ` +
-            `total saved: ~${stats.tokensSaved} tok`,
-          );
-        }
+      if (stats.toolCallsTranslated > 0) {
+        logger.info(
+          `[final] Translated ${stats.toolCallsTranslated} tool calls | ` +
+          `total saved: ~${stats.tokensSaved} tok`,
+        );
+      }
 
-        process.exit(code ?? 0);
-      });
+      // Proper exit code: child's code, or 128+signal for signal kills
+      const sigNum = signal
+        ? (constants.signals as Record<string, number>)[signal] ?? 0
+        : 0;
+      const exitCode = code ?? (signal ? 128 + sigNum : 1);
+
+      // Drain in-flight translations before exiting
+      const drainTimeout = setTimeout(() => {
+        logger.warn("In-flight translations did not complete, exiting");
+        process.exit(exitCode);
+      }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
+      drainTimeout.unref();
+
+      serverQueue
+        .then(() => {
+          clearTimeout(drainTimeout);
+          process.exit(exitCode);
+        })
+        .catch(() => {
+          process.exit(exitCode);
+        });
     });
-
-    // Graceful shutdown on signals
-    let shutdownInProgress = false;
-    const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 5000;
 
     const shutdown = (sig: NodeJS.Signals) => {
       if (shutdownInProgress) return;
@@ -290,10 +318,14 @@ export function createStdioProxy(
 
       logger.info(`Received ${sig}, attempting graceful shutdown...`);
 
-      // Forward signal to child process so it can clean up
-      child.kill(sig);
+      // Forward signal to child process so it can shut down gracefully
+      try {
+        child.kill(sig);
+      } catch {
+        // Child may already be dead
+      }
 
-      // Also close stdin as a secondary shutdown signal
+      // Also close stdin to signal child to finish
       child.stdin?.end();
 
       // Wait for graceful exit, then force kill if needed
@@ -302,7 +334,7 @@ export function createStdioProxy(
         child.kill("SIGKILL");
       }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
 
-      // Don't let the timer keep the event loop alive
+      // Don't let the timer keep the process alive
       forceKillTimer.unref();
 
       // Clear timer if child exits gracefully
