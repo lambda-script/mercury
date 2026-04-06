@@ -39,18 +39,39 @@ const MIN_JSON_STRING_LENGTH = 20;
 // Maximum recursion depth for JSON walker (prevent stack overflow).
 const MAX_JSON_DEPTH = 50;
 
+// Pre-compiled patterns for isStructuralString (called per JSON string value).
+const URL_PATTERN = /^https?:\/\//;
+const FILE_PATH_PATTERN = /^[/.~]/;
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}/;
+const WHITESPACE_PATTERN = /\s/;
+
+// Find the index of the first non-whitespace character.
+// Avoids allocating a trimmed string copy just to check a prefix.
+function firstNonWsIndex(text: string): number {
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch !== 0x20 && ch !== 0x09 && ch !== 0x0a && ch !== 0x0d && ch !== 0x0c) {
+      return i;
+    }
+  }
+  return text.length;
+}
+
 // Heuristic: does the text look like a markdown code block?
 function isCodeBlock(text: string): boolean {
-  return text.trimStart().startsWith("```");
+  return text.startsWith("```", firstNonWsIndex(text));
 }
 
 // Try to parse as JSON. Returns parsed value or null.
 function tryParseJson(text: string): unknown | null {
-  const trimmed = text.trimStart();
-  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
-  if (trimmed.length > MAX_JSON_CHECK_BYTES) return null;
+  if (text.length > MAX_JSON_CHECK_BYTES) return null;
+  const idx = firstNonWsIndex(text);
+  const ch = text.charCodeAt(idx);
+  // Check for '{' (0x7B) or '[' (0x5B)
+  if (ch !== 0x7b && ch !== 0x5b) return null;
   try {
-    return JSON.parse(trimmed) as unknown;
+    // JSON.parse natively skips leading whitespace
+    return JSON.parse(text) as unknown;
   } catch {
     return null;
   }
@@ -59,13 +80,13 @@ function tryParseJson(text: string): unknown | null {
 // Heuristic: does the string look like a URL, path, or identifier?
 function isStructuralString(text: string): boolean {
   // URLs
-  if (/^https?:\/\//.test(text)) return true;
+  if (URL_PATTERN.test(text)) return true;
   // File paths
-  if (/^[/.~]/.test(text) && !text.includes(" ")) return true;
+  if (FILE_PATH_PATTERN.test(text) && !text.includes(" ")) return true;
   // ISO dates
-  if (/^\d{4}-\d{2}-\d{2}/.test(text)) return true;
+  if (ISO_DATE_PATTERN.test(text)) return true;
   // Identifiers (no spaces, short)
-  if (text.length < MIN_JSON_STRING_LENGTH && !/\s/.test(text)) return true;
+  if (text.length < MIN_JSON_STRING_LENGTH && !WHITESPACE_PATTERN.test(text)) return true;
   return false;
 }
 
