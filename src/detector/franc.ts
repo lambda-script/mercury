@@ -39,25 +39,42 @@ function detectByScript(text: string): string | null {
  * @returns A detector instance
  */
 export function createFrancDetector(minLength: number): Detector {
+  // 1-entry cache: detect() is pure, so caching the last result
+  // eliminates redundant franc() calls when isTargetLang() and detect()
+  // are called on the same text (common in tool-result transform).
+  let cachedText: string | null = null;
+  let cachedResult: DetectResult | null = null;
+
   return {
     detect(text: string): DetectResult {
+      if (text === cachedText && cachedResult !== null) {
+        return cachedResult;
+      }
+
+      let result: DetectResult;
+
       // For short text, try script-based detection first
       if (text.length < minLength) {
         const scriptLang = detectByScript(text);
         if (scriptLang) {
-          return { lang: scriptLang, confidence: 1 };
+          result = { lang: scriptLang, confidence: 1 };
+        } else {
+          result = { lang: UNDETERMINED, confidence: 0 };
         }
-        return { lang: UNDETERMINED, confidence: 0 };
+      } else {
+        let lang = franc(text);
+        // franc often misidentifies Japanese as Chinese (cmn) when kanji-heavy.
+        // Kana presence is definitive proof of Japanese.
+        if (lang === "cmn" && KANA_PATTERN.test(text)) {
+          lang = "jpn";
+        }
+        const confidence = lang === UNDETERMINED ? 0 : 1;
+        result = { lang, confidence };
       }
 
-      let lang = franc(text);
-      // franc often misidentifies Japanese as Chinese (cmn) when kanji-heavy.
-      // Kana presence is definitive proof of Japanese.
-      if (lang === "cmn" && KANA_PATTERN.test(text)) {
-        lang = "jpn";
-      }
-      const confidence = lang === UNDETERMINED ? 0 : 1;
-      return { lang, confidence };
+      cachedText = text;
+      cachedResult = result;
+      return result;
     },
 
     isTargetLang(text: string, targetLang: string): boolean {
