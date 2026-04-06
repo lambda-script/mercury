@@ -243,6 +243,162 @@ describe("transformToolResult", () => {
     expect(parsed[0].name).toBe(`[EN] ${longJaText}`);
     expect(stats.blocksTranslated).toBe(1);
   });
+
+  it("should handle invalid JSON that starts with { or [", async () => {
+    // Text that looks like JSON but isn't valid — should fall through to plain text
+    const invalidJson = '{"broken json without closing brace';
+    const result = {
+      content: [{ type: "text" as const, text: invalidJson }],
+    };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0].text).toBe(`[EN] ${invalidJson}`);
+    expect(stats.blocksTranslated).toBe(1);
+  });
+
+  it("should handle JSON exceeding MAX_JSON_CHECK_BYTES (64KB)", async () => {
+    // Create JSON-like text over 64KB — tryParseJson should skip it, treat as plain text
+    const bigJsonLike = "{" + "x".repeat(65 * 1024) + "}";
+    const result = {
+      content: [{ type: "text" as const, text: bigJsonLike }],
+    };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0].text).toBe(`[EN] ${bigJsonLike}`);
+    expect(stats.blocksTranslated).toBe(1);
+  });
+
+  it("should stop translating at MAX_JSON_DEPTH (50)", async () => {
+    // Build deeply nested JSON structure (> 50 levels)
+    const longText = "これは深くネストされたテキストです。翻訳が必要な文字列です。";
+    let nested: unknown = longText;
+    for (let i = 0; i < 55; i++) {
+      nested = { child: nested };
+    }
+    const deepJson = JSON.stringify(nested);
+    const result = {
+      content: [{ type: "text" as const, text: deepJson }],
+    };
+
+    const translator = createMockTranslator();
+    await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    // The deepest string should NOT be translated because depth > 50
+    expect(translator.translate).not.toHaveBeenCalled();
+  });
+
+  it("should skip structural strings in JSON (URLs, paths, dates, identifiers)", async () => {
+    const jsonText = JSON.stringify({
+      url: "https://example.com/api/v1",
+      path: "/usr/local/bin/test",
+      date: "2024-01-15T10:30:00Z",
+      short_id: "abc123",
+      description: "これは翻訳すべき長いテキストです。構造的な文字列ではありません。",
+    });
+    const result = {
+      content: [{ type: "text" as const, text: jsonText }],
+    };
+
+    const translator = createMockTranslator();
+    const { stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    // Only the description should be translated
+    expect(translator.translate).toHaveBeenCalledTimes(1);
+    expect(stats.blocksTranslated).toBe(1);
+  });
+
+  it("should skip code blocks inside JSON string values", async () => {
+    const codeBlock = "```python\nprint('hello')\n```";
+    const jsonText = JSON.stringify({
+      code: codeBlock,
+      description: "これは翻訳すべき長いテキストです。コードブロックではありません。",
+    });
+    const result = {
+      content: [{ type: "text" as const, text: jsonText }],
+    };
+
+    const translator = createMockTranslator();
+    await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    // Only description should be translated, not the code block
+    expect(translator.translate).toHaveBeenCalledTimes(1);
+  });
+
+  it("should pass through numbers, booleans, null in JSON", async () => {
+    const jsonText = JSON.stringify({
+      count: 42,
+      active: true,
+      value: null,
+      description: "これは翻訳すべき長いテキストです。数値やブール値ではありません。",
+    });
+    const result = {
+      content: [{ type: "text" as const, text: jsonText }],
+    };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.count).toBe(42);
+    expect(parsed.active).toBe(true);
+    expect(parsed.value).toBeNull();
+  });
+
+  it("should pass through resource content blocks", async () => {
+    const result = {
+      content: [
+        { type: "resource" as const, resource: { uri: "file:///test", text: "テスト" } },
+        { type: "text" as const, text: "翻訳するテキスト" },
+      ],
+    };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0]).toEqual({
+      type: "resource",
+      resource: { uri: "file:///test", text: "テスト" },
+    });
+  });
 });
 
 describe("formatTransformStats", () => {

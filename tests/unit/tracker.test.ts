@@ -93,4 +93,47 @@ describe("RequestTracker", () => {
       expect(tracker.take(1)).toBe("tools/call");
     });
   });
+
+  describe("capacity eviction", () => {
+    it("should evict oldest entry when at MAX_PENDING (1000)", () => {
+      const tracker = createRequestTracker();
+
+      // Fill to capacity
+      for (let i = 0; i < 1000; i++) {
+        tracker.track(i, `method-${i}`);
+      }
+      expect(tracker.size).toBe(1000);
+
+      // Adding one more should evict the oldest (id=0)
+      tracker.track(1000, "tools/call");
+      expect(tracker.size).toBe(1000);
+      expect(tracker.take(0)).toBeUndefined(); // oldest was evicted
+      expect(tracker.take(1000)).toBe("tools/call"); // newest is present
+      expect(tracker.take(1)).toBe("method-1"); // second oldest still present
+    });
+
+    it("should evict entry with lowest timestamp when at capacity", () => {
+      vi.useFakeTimers();
+      const tracker = createRequestTracker();
+
+      // Add entries at different times
+      tracker.track("a", "method-a"); // ts = 0
+      vi.advanceTimersByTime(100);
+      tracker.track("b", "method-b"); // ts = 100
+      vi.advanceTimersByTime(100);
+
+      // Fill remaining capacity
+      for (let i = 2; i < 1000; i++) {
+        tracker.track(i, `method-${i}`);
+      }
+
+      // Add one more — should evict "a" (oldest timestamp)
+      tracker.track("new", "tools/call");
+      expect(tracker.take("a")).toBeUndefined();
+      expect(tracker.take("b")).toBe("method-b");
+      expect(tracker.take("new")).toBe("tools/call");
+
+      vi.useRealTimers();
+    });
+  });
 });
