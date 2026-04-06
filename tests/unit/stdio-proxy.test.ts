@@ -1,12 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-
-// We test the internal logic via the public module exports.
-// The stdio proxy spawns child processes, so unit tests focus on
-// the JSON-RPC message handling and tools/list stripping logic.
-
-// Test stripOutputSchemas by importing and testing the proxy module's behavior
-// Since stripOutputSchemas is not exported, we test it through integration-like tests
-// using the createStdioProxy function's message handling.
+import { stripOutputSchemas } from "../../src/proxy/stdio.js";
 
 describe("stdio proxy - JSON-RPC message types", () => {
   it("should correctly identify request messages (has method + id)", () => {
@@ -29,19 +22,6 @@ describe("stdio proxy - JSON-RPC message types", () => {
 });
 
 describe("stdio proxy - tools/list schema stripping", () => {
-  // Replicate the stripOutputSchemas logic for testing
-  function stripOutputSchemas(result: unknown): unknown {
-    if (!result || typeof result !== "object") return result;
-    const obj = result as Record<string, unknown>;
-    if (!Array.isArray(obj.tools)) return result;
-    const strippedTools = obj.tools.map((tool: unknown) => {
-      if (!tool || typeof tool !== "object") return tool;
-      const { outputSchema: _, ...rest } = tool as Record<string, unknown>;
-      return rest;
-    });
-    return { ...obj, tools: strippedTools };
-  }
-
   it("should remove outputSchema from tools", () => {
     const result = {
       tools: [
