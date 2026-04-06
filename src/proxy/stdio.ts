@@ -52,7 +52,7 @@ export interface StdioProxyStats {
  * @param result - The tools/list response result
  * @returns The same result with outputSchema fields removed from each tool
  */
-function stripOutputSchemas(result: unknown): unknown {
+export function stripOutputSchemas(result: unknown): unknown {
   if (!result || typeof result !== "object") return result;
 
   const obj = result as Record<string, unknown>;
@@ -232,7 +232,6 @@ export function createStdioProxy(
     const serverReader = createInterface({ input: child.stdout! });
 
     serverReader.on("line", (line) => {
-      const originalLine = line;
       serverQueue = serverQueue.then(async () => {
         const msg = parseJsonRpcLine(line);
         if (!msg) return;
@@ -242,8 +241,10 @@ export function createStdioProxy(
         } catch (err) {
           logger.error(`Error handling server message: ${err instanceof Error ? err.message : String(err)}`);
           // Forward original on error
-          process.stdout.write(originalLine + "\n");
+          process.stdout.write(line + "\n");
         }
+      }).catch((err) => {
+        logger.error(`Unexpected queue error: ${err instanceof Error ? err.message : String(err)}`);
       });
     });
   }
