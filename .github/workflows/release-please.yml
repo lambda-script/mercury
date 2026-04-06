@@ -18,7 +18,8 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          release-type: node
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
       - uses: actions/checkout@v4
         if: ${{ steps.release.outputs.release_created }}
@@ -34,6 +35,12 @@ jobs:
         if: ${{ steps.release.outputs.release_created }}
 
       - run: npm run build
+        if: ${{ steps.release.outputs.release_created }}
+
+      - name: Verify npm authentication
+        run: npm whoami
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         if: ${{ steps.release.outputs.release_created }}
 
       - run: npm publish --provenance --access public
