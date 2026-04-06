@@ -14,7 +14,8 @@ function createTranslator(config: Config): Translator {
     case "haiku":
       if (!config.auth) {
         throw new Error(
-          "Auth is required for the 'haiku' backend. Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in your environment."
+          "Auth is required for the 'haiku' backend. " +
+          "Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in the 'env' field of your .mcp.json configuration."
         );
       }
       return createHaikuTranslator(config.auth, config.haikuModel);
