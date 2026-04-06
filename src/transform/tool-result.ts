@@ -100,6 +100,35 @@ function isStructuralString(text: string): boolean {
 }
 
 /**
+ * Shared helper: detect language, update stats, translate, update stats.
+ * Used by both translateJsonStrings and translatePlainText.
+ */
+async function translateAndTrack(
+  text: string,
+  detector: Detector,
+  translator: Translator,
+  targetLang: string,
+  stats: StatsAccumulator,
+): Promise<string> {
+  if (!stats.detectedLang) {
+    const detected = detector.detect(text);
+    if (detected.confidence > 0) {
+      stats.detectedLang = detected.lang;
+    }
+  }
+
+  stats.blocksTranslated += 1;
+  stats.charsOriginal += text.length;
+  stats.tokensOriginal += estimateTokens(text);
+
+  const translated = await translator.translate(text, "auto", targetLang);
+  stats.charsTransformed += translated.length;
+  stats.tokensTransformed += estimateTokens(translated);
+
+  return translated;
+}
+
+/**
  * Recursively walk a JSON value and translate string values that
  * appear to contain natural language (non-English) text.
  * Returns a new value (never mutates input).
@@ -124,23 +153,7 @@ async function translateJsonStrings(
     if (isCodeBlock(value)) return value;
     if (detector.isTargetLang(value, targetLang)) return value;
 
-    // Detect language
-    if (!stats.detectedLang) {
-      const detected = detector.detect(value);
-      if (detected.confidence > 0) {
-        stats.detectedLang = detected.lang;
-      }
-    }
-
-    stats.blocksTranslated += 1;
-    stats.charsOriginal += value.length;
-    stats.tokensOriginal += estimateTokens(value);
-
-    const translated = await translator.translate(value, "auto", targetLang);
-    stats.charsTransformed += translated.length;
-    stats.tokensTransformed += estimateTokens(translated);
-
-    return translated;
+    return translateAndTrack(value, detector, translator, targetLang, stats);
   }
 
   if (Array.isArray(value)) {
@@ -177,23 +190,7 @@ async function translatePlainText(
     return text;
   }
 
-  // Detect language (first block wins)
-  if (!stats.detectedLang) {
-    const detected = detector.detect(text);
-    if (detected.confidence > 0) {
-      stats.detectedLang = detected.lang;
-    }
-  }
-
-  stats.blocksTranslated += 1;
-  stats.charsOriginal += text.length;
-  stats.tokensOriginal += estimateTokens(text);
-
-  const translated = await translator.translate(text, "auto", targetLang);
-  stats.charsTransformed += translated.length;
-  stats.tokensTransformed += estimateTokens(translated);
-
-  return translated;
+  return translateAndTrack(text, detector, translator, targetLang, stats);
 }
 
 /**
