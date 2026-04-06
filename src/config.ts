@@ -1,15 +1,24 @@
+/** Available translation backend identifiers. */
 export type TranslationBackend = "google-free" | "haiku";
 
+/** Authentication method for the haiku backend: API key or OAuth token. */
 export type AuthMethod =
   | { readonly type: "api_key"; readonly apiKey: string }
   | { readonly type: "auth_token"; readonly authToken: string };
 
+/** Mercury configuration loaded from MERCURY_* environment variables. */
 export interface Config {
+  /** Translation backend to use. */
   readonly backend: TranslationBackend;
+  /** Source language code, or "auto" for automatic detection. */
   readonly sourceLang: string;
+  /** Target language code for translation output (e.g., "en"). */
   readonly targetLang: string;
+  /** Authentication for the haiku backend. Null when using google-free. */
   readonly auth: AuthMethod | null;
+  /** Minimum text length (chars) for franc-based language detection. Shorter text uses Unicode script detection. */
   readonly minDetectLength: number;
+  /** Claude model ID for the haiku backend. */
   readonly haikuModel: string;
 }
 
