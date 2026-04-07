@@ -43,7 +43,7 @@ Prepend `npx @lambda-script/mercury --` to your existing MCP server command in `
   "mcpServers": {
     "your-server": {
       "command": "npx",
-      "args": ["@lambda-script/mercury", "--", "npx", "your-mcp-server"],
+      "args": ["@lambda-script/mercury", "--", "npx", "your-mcp-server"]
     }
   }
 }
@@ -61,7 +61,7 @@ Claude Code does **not** pass `ANTHROPIC_*` env vars to MCP servers automaticall
       "args": ["@lambda-script/mercury", "--", "npx", "your-mcp-server"],
       "env": {
         "MERCURY_BACKEND": "haiku",
-        "ANTHROPIC_API_KEY": "sk-ant-...",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
       }
     }
   }

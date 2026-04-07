@@ -54,9 +54,10 @@ Environment variables:
   MERCURY_TARGET_LANG        Target language: en (default)
   MERCURY_MIN_DETECT_LENGTH  Minimum text length for detection: 20 (default)
   MERCURY_LOG_LEVEL          Log level: debug, info, warn, error (default: info)
-  MERCURY_LOG_FILE           Log to file instead of stderr
+  MERCURY_LOG_FILE           Log to file instead of stderr (useful when stderr is swallowed)
 
-  # Required only for 'haiku' backend:
+  # 'haiku' backend only:
+  MERCURY_HAIKU_MODEL        Claude model ID (default: claude-haiku-4-5-20251001)
   ANTHROPIC_API_KEY          API key for Haiku translation
   ANTHROPIC_AUTH_TOKEN       OAuth token for Haiku translation (alternative)
 `.trim();
