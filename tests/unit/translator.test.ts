@@ -201,6 +201,87 @@ describe("Google Free Translator", () => {
     expect(result).toContain("[translated]");
   });
 
+  it("should split on single newline when no paragraph break exists", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // No "\n\n", but lots of "\n" — forces single-newline branch (line 46)
+    const line = "x".repeat(100);
+    const lines: string[] = [];
+    for (let i = 0; i < 80; i++) lines.push(line);
+    const text = lines.join("\n"); // ~8080 chars, only single newlines
+
+    const captured: string[] = [];
+    mockTranslate.mockImplementation(async (chunk: string) => {
+      captured.push(chunk);
+      return { text: `T${chunk.length}` };
+    });
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate(text, "auto", "en");
+
+    expect(captured.length).toBeGreaterThan(1);
+    // Each chunk must be under the 4500 limit
+    for (const c of captured) expect(c.length).toBeLessThanOrEqual(4500);
+  });
+
+  it("should split on sentence boundary when no newlines exist", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // No newlines at all, only ". " sentence breaks (line 50-51 branch)
+    const sentence = "x".repeat(80) + ". ";
+    let text = "";
+    while (text.length < 9000) text += sentence;
+
+    const captured: string[] = [];
+    mockTranslate.mockImplementation(async (chunk: string) => {
+      captured.push(chunk);
+      return { text: "ok" };
+    });
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate(text, "auto", "en");
+
+    expect(captured.length).toBeGreaterThan(1);
+    for (const c of captured) expect(c.length).toBeLessThanOrEqual(4500);
+  });
+
+  it("should hard-split text with no boundaries at all", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // No newlines, no sentence breaks — pure hard split (line 55)
+    const text = "x".repeat(10000);
+
+    const captured: string[] = [];
+    mockTranslate.mockImplementation(async (chunk: string) => {
+      captured.push(chunk);
+      return { text: "ok" };
+    });
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate(text, "auto", "en");
+
+    expect(captured.length).toBeGreaterThanOrEqual(3);
+    expect(captured[0].length).toBe(4500);
+  });
+
+  it("should pass through 'auto' from-lang verbatim", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    mockTranslate.mockResolvedValueOnce({ text: "ok" });
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate("hello world from auto", "auto", "en");
+
+    expect(mockTranslate.mock.calls[0][1].from).toBe("auto");
+  });
+
   it("should not split small text", async () => {
     const { createGoogleFreeTranslator } = await import(
       "../../src/translator/google-free.js"

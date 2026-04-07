@@ -275,6 +275,178 @@ describe("stdio proxy", () => {
     expect(currentChild.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
+  it("should reject start() if spawn throws", async () => {
+    const { createStdioProxy } = await import("../../src/proxy/stdio.js");
+
+    mockSpawn.mockImplementationOnce(() => {
+      throw new Error("ENOENT: command not found");
+    });
+
+    const proxy = createStdioProxy(
+      "nonexistent-cmd",
+      [],
+      { detect: vi.fn(), isTargetLang: vi.fn() },
+      { translate: vi.fn() },
+      "en",
+    );
+
+    await expect(proxy.start()).rejects.toThrow(/ENOENT/);
+  });
+
+  it("should reject start() if child stdio pipes are missing", async () => {
+    const { createStdioProxy } = await import("../../src/proxy/stdio.js");
+
+    // Build a child with no stdin/stdout/stderr
+    const brokenChild = new EventEmitter() as ChildProcess;
+    (brokenChild as unknown as Record<string, unknown>).stdin = null;
+    (brokenChild as unknown as Record<string, unknown>).stdout = null;
+    (brokenChild as unknown as Record<string, unknown>).stderr = null;
+    brokenChild.kill = vi.fn().mockReturnValue(true);
+
+    mockSpawn.mockImplementationOnce(() => brokenChild);
+
+    const proxy = createStdioProxy(
+      "broken",
+      [],
+      { detect: vi.fn(), isTargetLang: vi.fn() },
+      { translate: vi.fn() },
+      "en",
+    );
+
+    await expect(proxy.start()).rejects.toThrow(/Failed to open stdio pipes/);
+  });
+
+  it("should preserve message ordering with concurrent tools/call responses", async () => {
+    // Use a translator that delays in reverse order: first call resolves slow, second fast.
+    // The serial queue should still output them in arrival order.
+    const order: number[] = [];
+    let firstResolve: (v: string) => void = () => {};
+    const firstPromise = new Promise<string>((r) => {
+      firstResolve = r;
+    });
+
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+
+    let callIdx = 0;
+    const translator = {
+      translate: vi.fn(async () => {
+        const i = callIdx++;
+        if (i === 0) {
+          const v = await firstPromise;
+          order.push(0);
+          return v;
+        }
+        order.push(1);
+        return "second";
+      }),
+    };
+
+    await createProxy(detector, translator);
+
+    // Track two tools/call requests
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 100, method: "tools/call", params: {} }) + "\n",
+    );
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 101, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Server replies with both responses back-to-back
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 100,
+        result: { content: [{ type: "text", text: "最初" }] },
+      }) + "\n",
+    );
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 101,
+        result: { content: [{ type: "text", text: "二番目" }] },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Second translation has not been called yet (queue is serial, blocked on first)
+    expect(callIdx).toBe(1);
+
+    // Resolve first; queue should then process second
+    firstResolve("first");
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(order).toEqual([0, 1]);
+
+    const messages = getOutputMessages();
+    const ids = messages.filter((m) => m.id === 100 || m.id === 101).map((m) => m.id);
+    expect(ids).toEqual([100, 101]);
+  });
+
+  it("should drop notifications missing both id and method", async () => {
+    await createProxy();
+
+    // Pure jsonrpc envelope, no method, no id, no result, no error — pass-through-as-request branch
+    currentChild.mockStdout.write(JSON.stringify({ jsonrpc: "2.0" }) + "\n");
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Should be forwarded (falls through to "request from server" pass-through)
+    const messages = getOutputMessages();
+    expect(messages).toHaveLength(1);
+  });
+
+  it("should silently drop invalid lines from client stdin", async () => {
+    await createProxy();
+
+    mockStdin.write("not json at all\n");
+    mockStdin.write("\n");
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Nothing should reach stdout (proxy only forwards parsed messages)
+    expect(getOutputMessages()).toHaveLength(0);
+  });
+
+  it("should handle a large tool result with many content blocks", async () => {
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    const translator = {
+      translate: vi.fn(async (t: string) => `EN:${t.slice(0, 10)}`),
+    };
+
+    await createProxy(detector, translator);
+
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 200, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 30));
+
+    const blocks = Array.from({ length: 50 }, (_, i) => ({
+      type: "text",
+      text: `これは長い日本語のテキストブロック番号${i}です、翻訳が必要です`,
+    }));
+
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 200,
+        result: { content: blocks },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(translator.translate).toHaveBeenCalledTimes(50);
+    const messages = getOutputMessages();
+    const response = messages.find((m) => m.id === 200);
+    expect(response).toBeDefined();
+    const content = (response!.result as { content: { text: string }[] }).content;
+    expect(content).toHaveLength(50);
+  });
+
   it("should drain server queue before exiting on child exit", async () => {
     // Use a translator with a delay to simulate in-flight work
     let resolveTranslation: (value: string) => void;

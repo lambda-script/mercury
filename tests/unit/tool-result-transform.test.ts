@@ -224,6 +224,105 @@ describe("transformToolResult", () => {
     expect(transformed._meta).toEqual({ requestId: "123" });
   });
 
+  it("should stop recursion at max JSON depth", async () => {
+    // Build a deeply nested object: depth > 50 (MAX_JSON_DEPTH)
+    type Nested = { next?: Nested; leaf?: string };
+    const longText = "これは深くネストされた長い日本語テキストです。";
+    let inner: Nested = { leaf: longText };
+    for (let i = 0; i < 60; i++) {
+      inner = { next: inner };
+    }
+    const jsonText = JSON.stringify(inner);
+    const result = {
+      content: [{ type: "text" as const, text: jsonText }],
+    };
+
+    const translator = createMockTranslator();
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    // The deeply nested leaf should NOT have been translated (max depth halted recursion)
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text) as Nested;
+    let cur: Nested = parsed;
+    while (cur.next) cur = cur.next;
+    expect(cur.leaf).toBe(longText);
+    expect(translator.translate).not.toHaveBeenCalled();
+  });
+
+  it("should treat malformed JSON-looking text as plain text", async () => {
+    // Starts with '{' so tryParseJson attempts JSON.parse, but it fails — falls back to plain text
+    const malformed = "{これは壊れたJSONのように見えるテキストです、本当に長いテキスト";
+    const result = {
+      content: [{ type: "text" as const, text: malformed }],
+    };
+
+    const translator = createMockTranslator();
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0].text).toBe(`[EN] ${malformed}`);
+    expect(stats.blocksTranslated).toBe(1);
+    expect(translator.translate).toHaveBeenCalledOnce();
+  });
+
+  it("should handle whitespace-only text without crashing", async () => {
+    // All whitespace: firstNonWsIndex returns text.length (line 66 branch)
+    const result = {
+      content: [{ type: "text" as const, text: "   \n\t  \r\n   " }],
+    };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(true),
+      createMockTranslator(),
+      "en",
+    );
+
+    expect(content).toBeDefined();
+  });
+
+  it("should handle JSON with mixed content (booleans, numbers, null)", async () => {
+    const longText = "これは長い日本語のテキストです、翻訳されるべきです";
+    const jsonText = JSON.stringify({
+      flag: true,
+      count: 42,
+      missing: null,
+      desc: longText,
+    });
+    const result = {
+      content: [{ type: "text" as const, text: jsonText }],
+    };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text) as {
+      flag: boolean;
+      count: number;
+      missing: null;
+      desc: string;
+    };
+    expect(parsed.flag).toBe(true);
+    expect(parsed.count).toBe(42);
+    expect(parsed.missing).toBeNull();
+    expect(parsed.desc).toBe(`[EN] ${longText}`);
+  });
+
   it("should translate strings in JSON arrays", async () => {
     const longJaText = "これは配列内の長い日本語テキストです。翻訳が必要です。";
     const jsonArray = JSON.stringify([{ id: 1, name: longJaText }]);

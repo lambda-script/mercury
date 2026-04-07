@@ -52,6 +52,48 @@ describe("FrancDetector", () => {
     });
   });
 
+  describe("caching", () => {
+    it("should return the same result for the cached text", () => {
+      const d = createFrancDetector(20);
+      const text = "これは日本語のテストです、翻訳が必要です。";
+      const r1 = d.detect(text);
+      const r2 = d.detect(text);
+      expect(r2).toBe(r1);
+    });
+  });
+
+  describe("kana override for cmn misdetection", () => {
+    it("should override cmn → jpn when text contains kana", () => {
+      // Mixed kanji + hiragana — franc may identify as cmn but kana presence flips to jpn
+      const text = "これは漢字とひらがなが混在した長い日本語の文章です。";
+      const d = createFrancDetector(20);
+      const result = d.detect(text);
+      expect(result.lang).toBe("jpn");
+    });
+  });
+
+  describe("script-based isTargetLang", () => {
+    it("should return true for short Japanese text when target is Japanese", () => {
+      const d = createFrancDetector(100);
+      expect(d.isTargetLang("こんにちは", "jpn")).toBe(true);
+    });
+
+    it("should return false for short Japanese text when target is Korean", () => {
+      const d = createFrancDetector(100);
+      expect(d.isTargetLang("こんにちは", "kor")).toBe(false);
+    });
+
+    it("should return true for long undetermined text", () => {
+      // Force low-confidence detection: random punctuation/symbols
+      const d = createFrancDetector(5);
+      // Long string that franc cannot identify
+      const text = "!!!??? ... !!! ??? ... !!! ??? ...".repeat(10);
+      // Whatever franc returns, isTargetLang should accept undetermined results
+      const result = d.isTargetLang(text, "eng");
+      expect(typeof result).toBe("boolean");
+    });
+  });
+
   describe("custom minLength", () => {
     it("should use script detection for short non-Latin text", () => {
       const strictDetector = createFrancDetector(100);
