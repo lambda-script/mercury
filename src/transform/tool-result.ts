@@ -166,9 +166,18 @@ async function translateJsonStrings(
   }
 
   if (typeof value === "object" && value !== null) {
+    // Walk object entries in parallel for the same reason as arrays.
+    // Stats counters are commutative (+=) so out-of-order updates are safe;
+    // detectedLang is set once via the first detection that wins the race.
+    const entries = Object.entries(value);
+    const translatedValues = await Promise.all(
+      entries.map(([, val]) =>
+        translateJsonStrings(val, detector, translator, targetLang, stats, depth + 1),
+      ),
+    );
     const result: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value)) {
-      result[key] = await translateJsonStrings(val, detector, translator, targetLang, stats, depth + 1);
+    for (let i = 0; i < entries.length; i++) {
+      result[entries[i][0]] = translatedValues[i];
     }
     return result;
   }
