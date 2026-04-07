@@ -120,7 +120,12 @@ export function createStdioProxy(
 
   function writeToStdout(message: JsonRpcMessage): void {
     const line = JSON.stringify(message);
-    process.stdout.write(line + "\n");
+    try {
+      process.stdout.write(line + "\n");
+    } catch (err) {
+      // EPIPE if client closed stdout — log and continue rather than crash.
+      logger.warn(`Failed to write to stdout: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   function isRequest(msg: JsonRpcMessage): boolean {
@@ -210,9 +215,15 @@ export function createStdioProxy(
       }
     }
 
-    // Forward to child process
+    // Forward to child process. Catch EPIPE so a dead child doesn't crash us.
     const line = JSON.stringify(msg);
-    childStdin.write(line + "\n");
+    try {
+      childStdin.write(line + "\n");
+    } catch (err) {
+      logger.warn(
+        `Failed to write to child stdin: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /**
@@ -222,6 +233,11 @@ export function createStdioProxy(
     child: ChildProcess,
   ): void {
     const clientReader = createInterface({ input: process.stdin });
+    // readline re-emits input stream errors on the interface itself —
+    // attach a handler so a process.stdin error doesn't crash us.
+    clientReader.on("error", (err) => {
+      logger.warn(`Client readline error: ${err.message}`);
+    });
     clientReader.on("line", (line) => {
       const msg = parseJsonRpcLine(line);
       if (msg && child.stdin) {
@@ -243,6 +259,9 @@ export function createStdioProxy(
     child: ChildProcess,
   ): void {
     const serverReader = createInterface({ input: child.stdout! });
+    serverReader.on("error", (err) => {
+      logger.warn(`Server readline error: ${err.message}`);
+    });
 
     serverReader.on("line", (line) => {
       serverQueue = serverQueue.then(async () => {
@@ -373,6 +392,20 @@ export function createStdioProxy(
         }
 
         logger.info(`Started child process: ${command} ${args.join(" ")} (pid: ${child.pid})`);
+
+        // Attach error listeners to all child stdio streams. Without these,
+        // an EPIPE (e.g. child crashes mid-write) becomes an unhandled
+        // 'error' event and terminates the proxy. We log and rely on the
+        // child 'exit' handler for orderly shutdown.
+        child.stdin.on("error", (err) => {
+          logger.warn(`Child stdin error: ${err.message}`);
+        });
+        child.stdout.on("error", (err) => {
+          logger.warn(`Child stdout error: ${err.message}`);
+        });
+        child.stderr.on("error", (err) => {
+          logger.warn(`Child stderr error: ${err.message}`);
+        });
 
         // Setup I/O streams
         setupClientStream(child);

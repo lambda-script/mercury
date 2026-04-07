@@ -275,6 +275,43 @@ describe("stdio proxy", () => {
     expect(currentChild.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
+  it("should not crash when child stdin emits an error", async () => {
+    await createProxy();
+
+    // Simulate EPIPE on child stdin (e.g. child crashed mid-write).
+    // Without an error listener attached by the proxy, this would
+    // become an unhandled 'error' event and terminate the process.
+    expect(() => {
+      currentChild.mockStdin.emit("error", new Error("EPIPE"));
+    }).not.toThrow();
+  });
+
+  it("should not crash when child stdout emits an error", async () => {
+    await createProxy();
+
+    expect(() => {
+      currentChild.mockStdout.emit("error", new Error("EPIPE"));
+    }).not.toThrow();
+  });
+
+  it("should not crash when writing to child stdin throws synchronously", async () => {
+    await createProxy();
+
+    // Replace stdin.write with one that throws (e.g. EPIPE on a destroyed pipe)
+    currentChild.mockStdin.write = vi.fn(() => {
+      throw new Error("EPIPE");
+    }) as unknown as typeof currentChild.mockStdin.write;
+
+    // Client sends a request — proxy should swallow the write error
+    expect(() => {
+      mockStdin.write(
+        JSON.stringify({ jsonrpc: "2.0", id: 50, method: "tools/list" }) + "\n",
+      );
+    }).not.toThrow();
+
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
   it("should drain server queue before exiting on child exit", async () => {
     // Use a translator with a delay to simulate in-flight work
     let resolveTranslation: (value: string) => void;
