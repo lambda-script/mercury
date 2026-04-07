@@ -17,6 +17,8 @@ export interface JsonRpcMessage {
   readonly error?: unknown;
 }
 
+const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 5000;
+
 function isValidJsonRpcMessage(value: unknown): value is JsonRpcMessage {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -38,6 +40,23 @@ function parseJsonRpcLine(line: string): JsonRpcMessage | null {
     logger.debug("Non-JSON line, dropping");
     return null;
   }
+}
+
+/** Serialize a JSON-RPC message and write it to a stream as a single line. */
+function writeJsonRpc(stream: NodeJS.WritableStream, msg: JsonRpcMessage): void {
+  stream.write(JSON.stringify(msg) + "\n");
+}
+
+function isRequest(msg: JsonRpcMessage): boolean {
+  return msg.method !== undefined && msg.id !== undefined;
+}
+
+function isResponse(msg: JsonRpcMessage): boolean {
+  return msg.id !== undefined && msg.method === undefined;
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** Cumulative statistics for the stdio proxy session. */
@@ -67,10 +86,8 @@ export function stripOutputSchemas(result: unknown): unknown {
 
   const strippedTools = obj.tools.map((tool: unknown) => {
     if (!tool || typeof tool !== "object") return tool;
-    const toolObj = tool as Record<string, unknown>;
-    const rest = Object.fromEntries(
-      Object.entries(toolObj).filter(([key]) => key !== "outputSchema"),
-    );
+    const { outputSchema: _omit, ...rest } = tool as Record<string, unknown>;
+    void _omit;
     return rest;
   });
 
@@ -118,85 +135,66 @@ export function createStdioProxy(
   // Hoisted here so the exit handler can drain in-flight translations.
   let serverQueue: Promise<void> = Promise.resolve();
 
-  function writeToStdout(message: JsonRpcMessage): void {
-    const line = JSON.stringify(message);
-    process.stdout.write(line + "\n");
-  }
-
-  function isRequest(msg: JsonRpcMessage): boolean {
-    return msg.method !== undefined && msg.id !== undefined;
-  }
-
-  function isNotification(msg: JsonRpcMessage): boolean {
-    return msg.method !== undefined && msg.id === undefined;
-  }
-
-  function isResponse(msg: JsonRpcMessage): boolean {
-    return msg.id !== undefined && msg.method === undefined;
-  }
-
-  async function handleServerMessage(
-    msg: JsonRpcMessage,
-  ): Promise<void> {
-    // Notification from server — pass through
-    if (isNotification(msg)) {
-      writeToStdout(msg);
+  /**
+   * Translate a tools/call response and write it to stdout.
+   * On any failure, the original message is forwarded unchanged so the
+   * client never sees a dropped response.
+   */
+  async function handleToolCallResponse(msg: JsonRpcMessage): Promise<void> {
+    if (msg.result === undefined) {
+      writeJsonRpc(process.stdout, msg);
       return;
     }
 
-    // Response from server
-    if (isResponse(msg) && msg.id !== undefined) {
-      const method = tracker.take(msg.id);
+    stats.requestCount += 1;
+    const startTime = Date.now();
 
-      if (method === "tools/call" && msg.result !== undefined) {
-        // Translate tool result content
-        stats.requestCount += 1;
-        const startTime = Date.now();
+    try {
+      const { content, stats: transformStats } = await transformToolResult(
+        msg.result,
+        detector,
+        translator,
+        targetLang,
+      );
 
-        try {
-          const { content, stats: transformStats } = await transformToolResult(
-            msg.result,
-            detector,
-            translator,
-            targetLang,
-          );
+      const elapsedMs = Date.now() - startTime;
+      stats.tokensSaved += transformStats.tokensOriginal - transformStats.tokensTransformed;
 
-          const elapsedMs = Date.now() - startTime;
-          const saved = transformStats.tokensOriginal - transformStats.tokensTransformed;
-          stats.tokensSaved += saved;
-
-          if (transformStats.blocksTranslated > 0) {
-            stats.toolCallsTranslated += 1;
-            logger.info(`${formatTransformStats(transformStats)} | ${elapsedMs}ms`);
-            logger.info(`[session] #${stats.requestCount} | total saved: ~${stats.tokensSaved} tok`);
-          } else {
-            stats.toolCallsPassedThrough += 1;
-          }
-
-          writeToStdout({ ...msg, result: content });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          logger.error(`Transform error: ${message}`);
-          // On error, forward original result
-          writeToStdout(msg);
-        }
-        return;
+      if (transformStats.blocksTranslated > 0) {
+        stats.toolCallsTranslated += 1;
+        logger.info(`${formatTransformStats(transformStats)} | ${elapsedMs}ms`);
+        logger.info(`[session] #${stats.requestCount} | total saved: ~${stats.tokensSaved} tok`);
+      } else {
+        stats.toolCallsPassedThrough += 1;
       }
 
-      if (method === "tools/list" && msg.result !== undefined) {
-        // Strip outputSchema to save tokens
-        const stripped = stripOutputSchemas(msg.result);
-        writeToStdout({ ...msg, result: stripped });
-        return;
-      }
+      writeJsonRpc(process.stdout, { ...msg, result: content });
+    } catch (err) {
+      logger.error(`Transform error: ${errMsg(err)}`);
+      writeJsonRpc(process.stdout, msg);
+    }
+  }
 
-      // Other responses — pass through
-      writeToStdout(msg);
+  async function handleServerMessage(msg: JsonRpcMessage): Promise<void> {
+    // Notifications and server-initiated requests pass through unchanged.
+    if (!isResponse(msg) || msg.id === undefined) {
+      writeJsonRpc(process.stdout, msg);
       return;
     }
 
-    // Request from server to client (e.g., sampling) — pass through
-    writeToStdout(msg);
+    const method = tracker.take(msg.id);
+
+    if (method === "tools/call") {
+      await handleToolCallResponse(msg);
+      return;
+    }
+
+    if (method === "tools/list" && msg.result !== undefined) {
+      writeJsonRpc(process.stdout, { ...msg, result: stripOutputSchemas(msg.result) });
+      return;
+    }
+
+    writeJsonRpc(process.stdout, msg);
   }
 
   function handleClientMessage(
@@ -210,17 +208,11 @@ export function createStdioProxy(
       }
     }
 
-    // Forward to child process
-    const line = JSON.stringify(msg);
-    childStdin.write(line + "\n");
+    writeJsonRpc(childStdin, msg);
   }
 
-  /**
-   * Setup stream from client (stdin) to child process.
-   */
-  function setupClientStream(
-    child: ChildProcess,
-  ): void {
+  /** Setup stream from client (stdin) to child process. */
+  function setupClientStream(child: ChildProcess): void {
     const clientReader = createInterface({ input: process.stdin });
     clientReader.on("line", (line) => {
       const msg = parseJsonRpcLine(line);
@@ -239,44 +231,59 @@ export function createStdioProxy(
    * Setup stream from child process (stdout) to client, with translation.
    * Uses a serial promise queue to preserve message ordering during async translation.
    */
-  function setupServerStream(
-    child: ChildProcess,
-  ): void {
+  function setupServerStream(child: ChildProcess): void {
     const serverReader = createInterface({ input: child.stdout! });
 
     serverReader.on("line", (line) => {
       serverQueue = serverQueue.then(async () => {
         const msg = parseJsonRpcLine(line);
         if (!msg) return;
-
         try {
           await handleServerMessage(msg);
         } catch (err) {
-          logger.error(`Error handling server message: ${err instanceof Error ? err.message : String(err)}`);
-          // Forward original on error
+          logger.error(`Error handling server message: ${errMsg(err)}`);
+          // Forward original on error so the client is not left hanging.
           process.stdout.write(line + "\n");
         }
-      }).catch((err) => {
-        logger.error(`Unexpected queue error: ${err instanceof Error ? err.message : String(err)}`);
       });
     });
   }
 
   /**
-   * Setup process lifecycle handlers: error, exit, signals.
+   * Wait for the in-flight translation queue to drain, capped at the
+   * graceful-shutdown timeout. Resolves either way — never throws.
    */
-  function setupProcessLifecycle(
-    child: ChildProcess,
-    reject: (err: Error) => void,
-  ): void {
+  function drainServerQueue(): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        logger.warn("In-flight translations did not complete, exiting");
+        resolve();
+      }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
+      timer.unref();
+
+      serverQueue.finally(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  /** Compute the final exit code from a child's exit (code, signal). */
+  function computeExitCode(code: number | null, signal: NodeJS.Signals | null): number {
+    if (code !== null) return code;
+    if (signal) {
+      const sigNum = (constants.signals as Record<string, number>)[signal] ?? 0;
+      return 128 + sigNum;
+    }
+    return 1;
+  }
+
+  /** Setup process lifecycle handlers: error, exit, signals. */
+  function setupProcessLifecycle(child: ChildProcess, reject: (err: Error) => void): void {
     child.on("error", (err) => {
       logger.error(`Child process error: ${err.message}`);
       reject(err);
     });
-
-    // Graceful shutdown on signals
-    let shutdownInProgress = false;
-    const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 5000;
 
     child.on("exit", (code, signal) => {
       const reason = signal ? `signal ${signal}` : `code ${code}`;
@@ -289,58 +296,35 @@ export function createStdioProxy(
         );
       }
 
-      // Proper exit code: child's code, or 128+signal for signal kills
-      const sigNum = signal
-        ? (constants.signals as Record<string, number>)[signal] ?? 0
-        : 0;
-      const exitCode = code ?? (signal ? 128 + sigNum : 1);
-
-      // Drain in-flight translations before exiting
-      const drainTimeout = setTimeout(() => {
-        logger.warn("In-flight translations did not complete, exiting");
-        process.exit(exitCode);
-      }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
-      drainTimeout.unref();
-
-      serverQueue
-        .then(() => {
-          clearTimeout(drainTimeout);
-          process.exit(exitCode);
-        })
-        .catch(() => {
-          process.exit(exitCode);
-        });
+      const exitCode = computeExitCode(code, signal);
+      drainServerQueue().then(() => process.exit(exitCode));
     });
 
+    let shutdownInProgress = false;
     const shutdown = (sig: NodeJS.Signals) => {
       if (shutdownInProgress) return;
       shutdownInProgress = true;
 
       logger.info(`Received ${sig}, attempting graceful shutdown...`);
 
-      // Forward signal to child process so it can shut down gracefully
+      // Forward the signal so the child can shut down gracefully.
       try {
         child.kill(sig);
       } catch {
-        // Child may already be dead
+        // Child may already be dead.
       }
 
-      // Also close stdin to signal child to finish
+      // Also close stdin to signal the child to finish.
       child.stdin?.end();
 
-      // Wait for graceful exit, then force kill if needed
+      // Force kill if the child is still alive after the timeout.
       const forceKillTimer = setTimeout(() => {
         logger.warn(`Child did not exit after ${GRACEFUL_SHUTDOWN_TIMEOUT_MS}ms, force killing...`);
         child.kill("SIGKILL");
       }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
-
-      // Don't let the timer keep the process alive
       forceKillTimer.unref();
 
-      // Clear timer if child exits gracefully
-      child.once("exit", () => {
-        clearTimeout(forceKillTimer);
-      });
+      child.once("exit", () => clearTimeout(forceKillTimer));
     };
 
     process.once("SIGINT", () => shutdown("SIGINT"));
@@ -374,15 +358,13 @@ export function createStdioProxy(
 
         logger.info(`Started child process: ${command} ${args.join(" ")} (pid: ${child.pid})`);
 
-        // Setup I/O streams
         setupClientStream(child);
         setupServerStream(child);
         child.stderr.pipe(process.stderr);
 
-        // Setup lifecycle handlers
         setupProcessLifecycle(child, reject);
 
-        // Resolve immediately — the proxy is running
+        // Resolve immediately — the proxy is running.
         resolve();
       });
     },
