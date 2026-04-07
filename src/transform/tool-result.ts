@@ -52,7 +52,6 @@ const MAX_JSON_DEPTH = 50;
 const URL_PATTERN = /^https?:\/\//;
 const FILE_PATH_PATTERN = /^[/.~]/;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}/;
-const WHITESPACE_PATTERN = /\s/;
 
 // Find the index of the first non-whitespace character.
 // Avoids allocating a trimmed string copy just to check a prefix.
@@ -67,15 +66,17 @@ function firstNonWsIndex(text: string): number {
 }
 
 // Heuristic: does the text look like a markdown code block?
-function isCodeBlock(text: string): boolean {
-  return text.startsWith("```", firstNonWsIndex(text));
+// Accepts an optional precomputed first-non-whitespace index so callers
+// that already have it (translateText) avoid a second scan of the text.
+function isCodeBlock(text: string, startIdx: number = firstNonWsIndex(text)): boolean {
+  return text.startsWith("```", startIdx);
 }
 
 // Try to parse as JSON. Returns parsed value or null.
-function tryParseJson(text: string): unknown | null {
+// Accepts an optional precomputed first-non-whitespace index, see isCodeBlock above.
+function tryParseJson(text: string, startIdx: number = firstNonWsIndex(text)): unknown | null {
   if (text.length > MAX_JSON_CHECK_BYTES) return null;
-  const idx = firstNonWsIndex(text);
-  const ch = text.charCodeAt(idx);
+  const ch = text.charCodeAt(startIdx);
   // Check for '{' (0x7B) or '[' (0x5B)
   if (ch !== 0x7b && ch !== 0x5b) return null;
   try {
@@ -86,7 +87,10 @@ function tryParseJson(text: string): unknown | null {
   }
 }
 
-// Heuristic: does the string look like a URL, path, or identifier?
+// Heuristic: does the string look like a URL, path, or date?
+// (The "short identifier" branch this used to have was dead code: the only
+// caller, translateJsonStrings, already filters strings shorter than
+// MIN_JSON_STRING_LENGTH before calling this.)
 function isStructuralString(text: string): boolean {
   // URLs
   if (URL_PATTERN.test(text)) return true;
@@ -94,8 +98,6 @@ function isStructuralString(text: string): boolean {
   if (FILE_PATH_PATTERN.test(text) && !text.includes(" ")) return true;
   // ISO dates
   if (ISO_DATE_PATTERN.test(text)) return true;
-  // Identifiers (no spaces, short)
-  if (text.length < MIN_JSON_STRING_LENGTH && !WHITESPACE_PATTERN.test(text)) return true;
   return false;
 }
 
@@ -166,9 +168,11 @@ async function translateJsonStrings(
   }
 
   if (typeof value === "object" && value !== null) {
+    // Object.keys avoids the [k, v] tuple allocation per key that Object.entries does.
+    const obj = value as Record<string, unknown>;
     const result: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value)) {
-      result[key] = await translateJsonStrings(val, detector, translator, targetLang, stats, depth + 1);
+    for (const key of Object.keys(obj)) {
+      result[key] = await translateJsonStrings(obj[key], detector, translator, targetLang, stats, depth + 1);
     }
     return result;
   }
@@ -206,15 +210,19 @@ async function translateText(
   targetLang: string,
   stats: StatsAccumulator,
 ): Promise<string> {
+  // Both isCodeBlock and tryParseJson need the first non-whitespace index;
+  // compute it once for the (potentially large) text block and pass it in.
+  const startIdx = firstNonWsIndex(text);
+
   // Skip markdown code blocks
-  if (isCodeBlock(text)) {
+  if (isCodeBlock(text, startIdx)) {
     logger.debug(`Skipping code block (${text.length} chars)`);
     stats.blocksSkipped += 1;
     return text;
   }
 
   // JSON content: translate string values inside the structure
-  const parsed = tryParseJson(text);
+  const parsed = tryParseJson(text, startIdx);
   if (parsed !== null) {
     logger.debug(`Translating strings inside JSON block (${text.length} chars)`);
     const translated = await translateJsonStrings(parsed, detector, translator, targetLang, stats);

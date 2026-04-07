@@ -30,33 +30,46 @@ function splitIntoChunks(text: string): string[] {
     return [text];
   }
 
+  // Track a sliding `start` index instead of repeatedly slicing the tail.
+  // The previous implementation called `remaining.slice(splitIdx).trimStart()`
+  // each iteration, which is O(N) per step and O(N²) overall for large inputs.
   const chunks: string[] = [];
-  let remaining = text;
+  const len = text.length;
+  let start = 0;
 
-  while (remaining.length > 0) {
-    if (remaining.length <= MAX_CHUNK_CHARS) {
-      chunks.push(remaining);
+  while (start < len) {
+    if (len - start <= MAX_CHUNK_CHARS) {
+      chunks.push(text.slice(start));
       break;
     }
 
+    const windowEnd = start + MAX_CHUNK_CHARS;
+
     // Try to split at paragraph boundary (\n\n)
-    let splitIdx = remaining.lastIndexOf("\n\n", MAX_CHUNK_CHARS);
-    if (splitIdx <= 0) {
+    let splitIdx = text.lastIndexOf("\n\n", windowEnd);
+    if (splitIdx <= start) {
       // Try single newline
-      splitIdx = remaining.lastIndexOf("\n", MAX_CHUNK_CHARS);
+      splitIdx = text.lastIndexOf("\n", windowEnd);
     }
-    if (splitIdx <= 0) {
+    if (splitIdx <= start) {
       // Try sentence boundary (. followed by space)
-      splitIdx = remaining.lastIndexOf(". ", MAX_CHUNK_CHARS);
-      if (splitIdx > 0) splitIdx += 1; // include the period
+      splitIdx = text.lastIndexOf(". ", windowEnd);
+      if (splitIdx > start) splitIdx += 1; // include the period
     }
-    if (splitIdx <= 0) {
+    if (splitIdx <= start) {
       // Hard split as last resort
-      splitIdx = MAX_CHUNK_CHARS;
+      splitIdx = windowEnd;
     }
 
-    chunks.push(remaining.slice(0, splitIdx));
-    remaining = remaining.slice(splitIdx).trimStart();
+    chunks.push(text.slice(start, splitIdx));
+
+    // Skip leading whitespace for the next chunk (replaces trimStart on a fresh slice).
+    start = splitIdx;
+    while (start < len) {
+      const ch = text.charCodeAt(start);
+      if (ch !== 0x20 && ch !== 0x09 && ch !== 0x0a && ch !== 0x0d && ch !== 0x0c) break;
+      start++;
+    }
   }
 
   return chunks;
