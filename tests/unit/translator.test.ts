@@ -212,4 +212,136 @@ describe("Google Free Translator", () => {
 
     expect(mockTranslate).toHaveBeenCalledTimes(1);
   });
+
+  it("should split at single newline when no paragraph break is present", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // Build text >4500 chars with only single \n separators (no \n\n)
+    const line = "これは日本語の単一改行のテストの行です。".repeat(20); // ~480 chars
+    const largeText = Array.from({ length: 20 }, () => line).join("\n");
+    expect(largeText.length).toBeGreaterThan(4500);
+    expect(largeText.includes("\n\n")).toBe(false);
+
+    mockTranslate.mockImplementation(async (chunk: string) => ({
+      text: `[T:${chunk.length}]`,
+    }));
+
+    const translator = createGoogleFreeTranslator();
+    const result = await translator.translate(largeText, "auto", "en");
+
+    // Multiple chunks expected
+    expect(mockTranslate.mock.calls.length).toBeGreaterThan(1);
+    // Each chunk should be <= 4500 chars
+    for (const call of mockTranslate.mock.calls) {
+      expect((call[0] as string).length).toBeLessThanOrEqual(4500);
+    }
+    expect(result).toContain("[T:");
+  });
+
+  it("should split at sentence boundary when no newlines are present", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // No newlines anywhere; only ". " sentence boundaries
+    const sentence = "This is a sentence with no newlines anywhere in it. ";
+    const largeText = sentence.repeat(120); // ~6240 chars, single line
+    expect(largeText.length).toBeGreaterThan(4500);
+    expect(largeText.includes("\n")).toBe(false);
+
+    mockTranslate.mockImplementation(async (chunk: string) => ({
+      text: `[len:${chunk.length}]`,
+    }));
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate(largeText, "auto", "en");
+
+    expect(mockTranslate.mock.calls.length).toBeGreaterThan(1);
+    // First chunk must end at a sentence boundary (a period)
+    const firstChunk = mockTranslate.mock.calls[0][0] as string;
+    expect(firstChunk.endsWith(".")).toBe(true);
+    expect(firstChunk.length).toBeLessThanOrEqual(4500);
+  });
+
+  it("should hard-split when no boundary characters are present at all", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // No newlines, no ". " — one massive contiguous string
+    const largeText = "x".repeat(10_000);
+    mockTranslate.mockImplementation(async (chunk: string) => ({
+      text: `[len:${chunk.length}]`,
+    }));
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate(largeText, "auto", "en");
+
+    // Should have at least 3 chunks (10000 / 4500 = 2.2 → 3)
+    expect(mockTranslate.mock.calls.length).toBeGreaterThanOrEqual(3);
+    // First chunk should be exactly the hard-split max
+    expect((mockTranslate.mock.calls[0][0] as string).length).toBe(4500);
+  });
+
+  it("should pass through an explicit (non-auto) source language", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    mockTranslate.mockResolvedValueOnce({ text: "Hello" });
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate("こんにちは", "ja", "en");
+
+    expect(mockTranslate).toHaveBeenCalledWith(
+      "こんにちは",
+      expect.objectContaining({ from: "ja", to: "en" }),
+    );
+  });
+
+  it("should propagate failure of one chunk while still translating others", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    const part = "x".repeat(4500);
+    const text = part + "\n\n" + part; // 2 chunks via paragraph split
+
+    // First chunk: fails 3 times (returns original)
+    // Second chunk: succeeds first try
+    mockTranslate
+      .mockRejectedValueOnce(new Error("fail-1"))
+      .mockRejectedValueOnce(new Error("fail-2"))
+      .mockRejectedValueOnce(new Error("fail-3"))
+      .mockResolvedValueOnce({ text: "second-translated" });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate(text, "auto", "en");
+
+    // Drain the retry sleeps for the first chunk
+    await flushRetryTimers();
+
+    const result = await promise;
+
+    // First chunk falls back to original; second is translated; joined with \n
+    expect(result).toBe(part + "\n" + "second-translated");
+  });
+
+  it("should handle Error with cause in retry log path", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    const cause = new Error("underlying socket error");
+    const err = new Error("translation failed", { cause });
+
+    mockTranslate.mockRejectedValueOnce(err).mockResolvedValueOnce({ text: "OK" });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate("test", "auto", "en");
+    await vi.advanceTimersByTimeAsync(600);
+    const result = await promise;
+
+    expect(result).toBe("OK");
+  });
 });

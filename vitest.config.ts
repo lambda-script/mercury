@@ -7,7 +7,7 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "lcov"],
       include: ["src/**/*.ts"],
-      exclude: ["src/index.ts", "src/translator/haiku.ts", "src/translator/index.ts", "src/detector/index.ts"],
+      exclude: ["src/index.ts", "src/translator/index.ts", "src/detector/index.ts"],
       thresholds: {
         lines: 80,
         functions: 80,
