@@ -224,6 +224,117 @@ describe("transformToolResult", () => {
     expect(transformed._meta).toEqual({ requestId: "123" });
   });
 
+  it("should translate strings inside nested JSON objects", async () => {
+    const longJaText = "これはネストされた日本語テキストです。翻訳が必要です。";
+    const jsonText = JSON.stringify({
+      outer: { inner: { deep: longJaText } },
+    });
+    const result = {
+      content: [{ type: "text" as const, text: jsonText }],
+    };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.outer.inner.deep).toBe(`[EN] ${longJaText}`);
+    expect(stats.blocksTranslated).toBe(1);
+  });
+
+  it("should preserve key order when walking JSON objects", async () => {
+    const longJaText = "これは長い日本語のテキストです。翻訳が必要です。テスト用。";
+    const jsonText = JSON.stringify({
+      z_first: longJaText,
+      a_second: longJaText,
+      m_third: longJaText,
+    });
+    const result = {
+      content: [{ type: "text" as const, text: jsonText }],
+    };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text) as Record<string, string>;
+    expect(Object.keys(parsed)).toEqual(["z_first", "a_second", "m_third"]);
+  });
+
+  it("should stop recursion at the maximum JSON depth", async () => {
+    // Build a value deeper than MAX_JSON_DEPTH (50). Use 60.
+    type Nested = { next?: Nested; payload?: string };
+    const longJaText = "これは深くネストされた日本語のテキストです。翻訳されるべきですが、深すぎる場合は翻訳されません。";
+    let nested: Nested = { payload: longJaText };
+    for (let i = 0; i < 60; i++) {
+      nested = { next: nested };
+    }
+    const jsonText = JSON.stringify(nested);
+    const result = {
+      content: [{ type: "text" as const, text: jsonText }],
+    };
+
+    const translator = createMockTranslator();
+    await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    // The deeply nested payload should have been skipped due to depth cap.
+    expect(translator.translate).not.toHaveBeenCalled();
+  });
+
+  it("should leave whitespace-only text untouched (firstNonWsIndex full scan)", async () => {
+    const result = {
+      content: [{ type: "text" as const, text: "   \n\t  \r" }],
+    };
+
+    const translator = createMockTranslator();
+    const { content } = await transformToolResult(
+      result,
+      // isTargetLang(true) so plain-text path returns early without invoking the translator
+      createMockDetector(true),
+      translator,
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0].text).toBe("   \n\t  \r");
+    expect(translator.translate).not.toHaveBeenCalled();
+  });
+
+  it("should fall back to plain-text path when JSON.parse fails on a brace-prefixed string", async () => {
+    // Starts with '{' so tryParseJson attempts a parse, but is malformed,
+    // exercising the catch branch and forcing the plain-text path.
+    const malformed = "{not valid json but starts with a brace and is long enough to translate";
+    const result = {
+      content: [{ type: "text" as const, text: malformed }],
+    };
+
+    const translator = createMockTranslator();
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0].text).toBe(`[EN] ${malformed}`);
+    expect(stats.blocksTranslated).toBe(1);
+    expect(translator.translate).toHaveBeenCalledTimes(1);
+  });
+
   it("should translate strings in JSON arrays", async () => {
     const longJaText = "これは配列内の長い日本語テキストです。翻訳が必要です。";
     const jsonArray = JSON.stringify([{ id: 1, name: longJaText }]);

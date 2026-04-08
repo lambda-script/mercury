@@ -166,9 +166,18 @@ async function translateJsonStrings(
   }
 
   if (typeof value === "object" && value !== null) {
+    // Walk object values in parallel, mirroring the array branch above.
+    // Object key insertion order is preserved in JS, so reassembling
+    // entries in iteration order yields a stable output shape.
+    const entries = Object.entries(value);
+    const translated = await Promise.all(
+      entries.map(([, val]) =>
+        translateJsonStrings(val, detector, translator, targetLang, stats, depth + 1),
+      ),
+    );
     const result: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value)) {
-      result[key] = await translateJsonStrings(val, detector, translator, targetLang, stats, depth + 1);
+    for (let i = 0; i < entries.length; i++) {
+      result[entries[i][0]] = translated[i];
     }
     return result;
   }
