@@ -22,6 +22,20 @@ function getErrorMessage(err: unknown): string {
 }
 
 /**
+ * Adjust a split index so it never falls between the two halves of a UTF-16
+ * surrogate pair. Splitting mid-pair would corrupt non-BMP characters
+ * (emoji, rare CJK) by leaving an unpaired surrogate in each chunk.
+ */
+function safeSplitIndex(text: string, idx: number): number {
+  if (idx <= 0 || idx >= text.length) return idx;
+  const code = text.charCodeAt(idx);
+  // Low surrogate at idx means idx-1 is its high surrogate; back up so the
+  // pair stays together in the next chunk.
+  if (code >= 0xdc00 && code <= 0xdfff) return idx - 1;
+  return idx;
+}
+
+/**
  * Split text into chunks at paragraph/sentence boundaries,
  * each under MAX_CHUNK_CHARS.
  */
@@ -51,8 +65,8 @@ function splitIntoChunks(text: string): string[] {
       if (splitIdx > 0) splitIdx += 1; // include the period
     }
     if (splitIdx <= 0) {
-      // Hard split as last resort
-      splitIdx = MAX_CHUNK_CHARS;
+      // Hard split as last resort — guard against splitting a surrogate pair.
+      splitIdx = safeSplitIndex(remaining, MAX_CHUNK_CHARS);
     }
 
     chunks.push(remaining.slice(0, splitIdx));
