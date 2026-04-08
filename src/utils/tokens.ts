@@ -23,29 +23,31 @@ export function estimateTokens(text: string): number {
   for (let i = 0; i < len; i++) {
     const cp = text.charCodeAt(i);
 
-    if (
+    // Fast path: Latin/ASCII and Latin-1 (most common case in any text,
+    // including punctuation/whitespace inside CJK content). Short-circuits
+    // before any of the higher-range CJK/Devanagari checks.
+    if (cp < 0x0400) {
+      tokens += 0.25;
+    } else if (
+      (cp >= 0x4e00 && cp <= 0x9fff) || // CJK Unified Ideographs
       (cp >= 0x3040 && cp <= 0x309f) || // Hiragana
       (cp >= 0x30a0 && cp <= 0x30ff) || // Katakana
-      (cp >= 0x4e00 && cp <= 0x9fff) || // CJK Unified Ideographs
       (cp >= 0xac00 && cp <= 0xd7af)    // Hangul Syllables
     ) {
       tokens += 1.5;
-    } else if (cp >= 0x0400 && cp <= 0x04ff) {
-      // Cyrillic
+    } else if (cp <= 0x04ff) {
+      // Cyrillic (0x0400–0x04ff)
       tokens += 0.5;
     } else if (cp >= 0x0600 && cp <= 0x06ff) {
       // Arabic
       tokens += 1.2;
-    } else if (
-      (cp >= 0x0900 && cp <= 0x097f) || // Devanagari
-      (cp >= 0x0980 && cp <= 0x09ff)    // Bengali
-    ) {
+    } else if (cp >= 0x0900 && cp <= 0x09ff) {
+      // Devanagari (0x0900–0x097f) and Bengali (0x0980–0x09ff)
       tokens += 1.5;
     } else if (cp >= 0x0e00 && cp <= 0x0e7f) {
       // Thai
       tokens += 1.0;
     } else {
-      // Latin, digits, punctuation, whitespace
       tokens += 0.25;
     }
   }

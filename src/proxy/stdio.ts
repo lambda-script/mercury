@@ -26,7 +26,16 @@ function isValidJsonRpcMessage(value: unknown): value is JsonRpcMessage {
  * Returns null if invalid or not a valid JSON-RPC message.
  */
 function parseJsonRpcLine(line: string): JsonRpcMessage | null {
-  if (!line.trim()) return null;
+  // Skip empty / whitespace-only lines without allocating a trimmed copy.
+  let i = 0;
+  const len = line.length;
+  while (i < len) {
+    const ch = line.charCodeAt(i);
+    if (ch !== 0x20 && ch !== 0x09 && ch !== 0x0a && ch !== 0x0d) break;
+    i++;
+  }
+  if (i === len) return null;
+
   try {
     const parsed = JSON.parse(line) as unknown;
     if (!isValidJsonRpcMessage(parsed)) {
