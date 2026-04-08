@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import type { Detector } from "../detector/index.js";
 import type { Translator } from "../translator/index.js";
 import { createRequestTracker, type RequestTracker } from "./tracker.js";
+import { stripOutputSchemas } from "./strip-schemas.js";
 import { transformToolResult, formatTransformStats } from "../transform/tool-result.js";
 import { logger } from "../utils/logger.js";
 
@@ -50,31 +51,6 @@ export interface StdioProxyStats {
   toolCallsTranslated: number;
   /** Number of tool calls where text was already in target language (no translation needed). */
   toolCallsPassedThrough: number;
-}
-
-/**
- * Remove `outputSchema` from tools/list responses to save tokens.
- * Each tool's outputSchema can be large and is not needed by the LLM.
- *
- * @param result - The tools/list response result
- * @returns The same result with outputSchema fields removed from each tool
- */
-export function stripOutputSchemas(result: unknown): unknown {
-  if (!result || typeof result !== "object") return result;
-
-  const obj = result as Record<string, unknown>;
-  if (!Array.isArray(obj.tools)) return result;
-
-  const strippedTools = obj.tools.map((tool: unknown) => {
-    if (!tool || typeof tool !== "object") return tool;
-    const toolObj = tool as Record<string, unknown>;
-    const rest = Object.fromEntries(
-      Object.entries(toolObj).filter(([key]) => key !== "outputSchema"),
-    );
-    return rest;
-  });
-
-  return { ...obj, tools: strippedTools };
 }
 
 /** MCP stdio proxy that intercepts and translates tool results. */
