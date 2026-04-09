@@ -9,8 +9,35 @@ const TLD_ROTATION = ["com", "co.jp", "co.uk"] as const;
 // Google Translate free has a ~5000 char limit per request
 const MAX_CHUNK_CHARS = 4500;
 
+// Per-attempt timeout. Without this, a hung HTTPS connection would block the
+// stdio proxy's serial translation queue forever, freezing all tool responses.
+const ATTEMPT_TIMEOUT_MS = 15_000;
+
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Race a promise against a timeout. Rejects with a timeout error if the
+ * promise doesn't settle within `ms`. The timer is unref'd so it does not
+ * keep the event loop alive on its own.
+ */
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Translation attempt timed out after ${ms}ms`)),
+          ms,
+        );
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function getErrorMessage(err: unknown): string {
@@ -84,12 +111,15 @@ async function translateChunk(
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const tld = TLD_ROTATION[attempt % TLD_ROTATION.length];
     try {
-      const result = await translate(text, {
-        from: fromLang,
-        to,
-        tld,
-        forceBatch: false,
-      });
+      const result = await withTimeout(
+        translate(text, {
+          from: fromLang,
+          to,
+          tld,
+          forceBatch: false,
+        }),
+        ATTEMPT_TIMEOUT_MS,
+      );
 
       return result.text;
     } catch (err) {
@@ -120,6 +150,7 @@ async function translateChunk(
  * - No API key required
  * - Automatic chunking at paragraph/sentence boundaries (max 4500 chars per chunk)
  * - Retry with TLD rotation (com, co.jp, co.uk) and exponential backoff (3 attempts)
+ * - Per-attempt timeout (15s) so a hung connection cannot freeze the proxy queue
  * - Graceful degradation: Returns original text if all attempts fail
  *
  * @returns A translator instance
