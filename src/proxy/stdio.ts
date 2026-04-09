@@ -33,7 +33,7 @@ function parseJsonRpcLine(line: string): JsonRpcMessage | null {
       logger.debug("Non-object JSON, dropping");
       return null;
     }
-    return parsed as JsonRpcMessage;
+    return parsed;
   } catch {
     logger.debug("Non-JSON line, dropping");
     return null;
@@ -67,10 +67,8 @@ export function stripOutputSchemas(result: unknown): unknown {
 
   const strippedTools = obj.tools.map((tool: unknown) => {
     if (!tool || typeof tool !== "object") return tool;
-    const toolObj = tool as Record<string, unknown>;
-    const rest = Object.fromEntries(
-      Object.entries(toolObj).filter(([key]) => key !== "outputSchema"),
-    );
+    const { outputSchema: _drop, ...rest } = tool as Record<string, unknown>;
+    void _drop;
     return rest;
   });
 
@@ -83,6 +81,51 @@ export interface StdioProxy {
   readonly stats: StdioProxyStats;
   /** Start the proxy. Spawns the child process and begins intercepting messages. */
   start(): Promise<void>;
+}
+
+/**
+ * A FIFO queue that runs async tasks one at a time.
+ *
+ * Used to preserve message ordering while individual tasks (translations)
+ * are async. Errors in tasks are caught and logged, never propagated, so
+ * one failing task does not poison subsequent ones.
+ */
+interface SerialQueue {
+  /** Append a task. Resolves immediately; the task runs in FIFO order. */
+  enqueue(task: () => Promise<void>): void;
+  /** Resolves when all currently queued tasks have settled. */
+  drain(): Promise<void>;
+}
+
+function createSerialQueue(label: string): SerialQueue {
+  let tail: Promise<void> = Promise.resolve();
+  return {
+    enqueue(task) {
+      tail = tail.then(task).catch((err) => {
+        logger.error(
+          `[${label}] task error: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    },
+    drain() {
+      return tail;
+    },
+  };
+}
+
+const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 5000;
+
+/**
+ * Compute the exit code from child exit info.
+ * Mirrors shell convention: 128+signal for signal kills, child code otherwise.
+ */
+function computeExitCode(code: number | null, signal: NodeJS.Signals | null): number {
+  if (code !== null) return code;
+  if (signal !== null) {
+    const sigNum = (constants.signals as Record<string, number>)[signal] ?? 0;
+    return 128 + sigNum;
+  }
+  return 1;
 }
 
 /**
@@ -114,111 +157,99 @@ export function createStdioProxy(
     toolCallsPassedThrough: 0,
   };
 
-  // Promise queue for serializing async server message handling.
-  // Hoisted here so the exit handler can drain in-flight translations.
-  let serverQueue: Promise<void> = Promise.resolve();
+  // Serializes async server message handling so responses keep FIFO order.
+  // Hoisted so the exit handler can drain in-flight translations before exit.
+  const serverQueue = createSerialQueue("server-queue");
 
-  function writeToStdout(message: JsonRpcMessage): void {
-    const line = JSON.stringify(message);
+  function writeMessage(message: JsonRpcMessage): void {
     try {
-      process.stdout.write(line + "\n");
+      process.stdout.write(JSON.stringify(message) + "\n");
     } catch (err) {
       // EPIPE if client closed stdout — log and continue rather than crash.
-      logger.warn(`Failed to write to stdout: ${err instanceof Error ? err.message : String(err)}`);
+      logger.warn(
+        `Failed to write to stdout: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
-  function isRequest(msg: JsonRpcMessage): boolean {
-    return msg.method !== undefined && msg.id !== undefined;
-  }
-
-  function isNotification(msg: JsonRpcMessage): boolean {
-    return msg.method !== undefined && msg.id === undefined;
-  }
-
-  function isResponse(msg: JsonRpcMessage): boolean {
-    return msg.id !== undefined && msg.method === undefined;
-  }
-
-  async function handleServerMessage(
-    msg: JsonRpcMessage,
-  ): Promise<void> {
-    // Notification from server — pass through
-    if (isNotification(msg)) {
-      writeToStdout(msg);
+  /** Translate a tools/call response, falling back to the original on error. */
+  async function handleToolCallResponse(msg: JsonRpcMessage): Promise<void> {
+    if (msg.result === undefined) {
+      writeMessage(msg);
       return;
     }
 
-    // Response from server
-    if (isResponse(msg) && msg.id !== undefined) {
-      const method = tracker.take(msg.id);
+    stats.requestCount += 1;
+    const startTime = Date.now();
 
-      if (method === "tools/call" && msg.result !== undefined) {
-        // Translate tool result content
-        stats.requestCount += 1;
-        const startTime = Date.now();
+    try {
+      const { content, stats: transformStats } = await transformToolResult(
+        msg.result,
+        detector,
+        translator,
+        targetLang,
+      );
 
-        try {
-          const { content, stats: transformStats } = await transformToolResult(
-            msg.result,
-            detector,
-            translator,
-            targetLang,
-          );
+      const elapsedMs = Date.now() - startTime;
+      stats.tokensSaved += transformStats.tokensOriginal - transformStats.tokensTransformed;
 
-          const elapsedMs = Date.now() - startTime;
-          const saved = transformStats.tokensOriginal - transformStats.tokensTransformed;
-          stats.tokensSaved += saved;
-
-          if (transformStats.blocksTranslated > 0) {
-            stats.toolCallsTranslated += 1;
-            logger.info(`${formatTransformStats(transformStats)} | ${elapsedMs}ms`);
-            logger.info(`[session] #${stats.requestCount} | total saved: ~${stats.tokensSaved} tok`);
-          } else {
-            stats.toolCallsPassedThrough += 1;
-          }
-
-          writeToStdout({ ...msg, result: content });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          logger.error(`Transform error: ${message}`);
-          // On error, forward original result
-          writeToStdout(msg);
-        }
-        return;
+      if (transformStats.blocksTranslated > 0) {
+        stats.toolCallsTranslated += 1;
+        logger.info(`${formatTransformStats(transformStats)} | ${elapsedMs}ms`);
+        logger.info(`[session] #${stats.requestCount} | total saved: ~${stats.tokensSaved} tok`);
+      } else {
+        stats.toolCallsPassedThrough += 1;
       }
 
-      if (method === "tools/list" && msg.result !== undefined) {
-        // Strip outputSchema to save tokens
-        const stripped = stripOutputSchemas(msg.result);
-        writeToStdout({ ...msg, result: stripped });
-        return;
-      }
+      writeMessage({ ...msg, result: content });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(`Transform error: ${message}`);
+      writeMessage(msg); // Forward original on error
+    }
+  }
 
-      // Other responses — pass through
-      writeToStdout(msg);
+  /** Strip outputSchema from a tools/list response. */
+  function handleToolListResponse(msg: JsonRpcMessage): void {
+    if (msg.result === undefined) {
+      writeMessage(msg);
+      return;
+    }
+    writeMessage({ ...msg, result: stripOutputSchemas(msg.result) });
+  }
+
+  /** Dispatch a server-originated message. */
+  async function handleServerMessage(msg: JsonRpcMessage): Promise<void> {
+    const isResponse = msg.id !== undefined && msg.method === undefined;
+    if (!isResponse) {
+      // Notification, request from server (e.g. sampling), or anything else: pass through.
+      writeMessage(msg);
       return;
     }
 
-    // Request from server to client (e.g., sampling) — pass through
-    writeToStdout(msg);
+    const method = tracker.take(msg.id!);
+    switch (method) {
+      case "tools/call":
+        await handleToolCallResponse(msg);
+        return;
+      case "tools/list":
+        handleToolListResponse(msg);
+        return;
+      default:
+        writeMessage(msg);
+    }
   }
 
-  function handleClientMessage(
-    msg: JsonRpcMessage,
-    childStdin: NodeJS.WritableStream,
-  ): void {
-    // Track requests so we know which responses to transform
-    if (isRequest(msg) && msg.id !== undefined && msg.method !== undefined) {
+  function handleClientMessage(msg: JsonRpcMessage, childStdin: NodeJS.WritableStream): void {
+    // Track requests so we know which responses to transform.
+    if (msg.id !== undefined && msg.method !== undefined) {
       if (msg.method === "tools/call" || msg.method === "tools/list") {
         tracker.track(msg.id, msg.method);
       }
     }
-
     // Forward to child process. Catch EPIPE so a dead child doesn't crash us.
-    const line = JSON.stringify(msg);
     try {
-      childStdin.write(line + "\n");
+      childStdin.write(JSON.stringify(msg) + "\n");
     } catch (err) {
       logger.warn(
         `Failed to write to child stdin: ${err instanceof Error ? err.message : String(err)}`,
@@ -226,12 +257,8 @@ export function createStdioProxy(
     }
   }
 
-  /**
-   * Setup stream from client (stdin) to child process.
-   */
-  function setupClientStream(
-    child: ChildProcess,
-  ): void {
+  /** Setup stream from client (stdin) to child process. */
+  function setupClientStream(child: ChildProcess): void {
     const clientReader = createInterface({ input: process.stdin });
     // readline re-emits input stream errors on the interface itself —
     // attach a handler so a process.stdin error doesn't crash us.
@@ -252,50 +279,56 @@ export function createStdioProxy(
   }
 
   /**
-   * Setup stream from child process (stdout) to client, with translation.
-   * Uses a serial promise queue to preserve message ordering during async translation.
+   * Setup stream from child process (stdout) to client.
+   * Async work is enqueued onto a serial queue so messages stay in FIFO order.
    */
-  function setupServerStream(
-    child: ChildProcess,
-  ): void {
+  function setupServerStream(child: ChildProcess): void {
     const serverReader = createInterface({ input: child.stdout! });
     serverReader.on("error", (err) => {
       logger.warn(`Server readline error: ${err.message}`);
     });
-
     serverReader.on("line", (line) => {
-      serverQueue = serverQueue.then(async () => {
+      serverQueue.enqueue(async () => {
         const msg = parseJsonRpcLine(line);
         if (!msg) return;
-
         try {
           await handleServerMessage(msg);
         } catch (err) {
-          logger.error(`Error handling server message: ${err instanceof Error ? err.message : String(err)}`);
-          // Forward original on error
+          logger.error(
+            `Error handling server message: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          // Forward original on error so the client still sees something.
           process.stdout.write(line + "\n");
         }
-      }).catch((err) => {
-        logger.error(`Unexpected queue error: ${err instanceof Error ? err.message : String(err)}`);
       });
     });
   }
 
-  /**
-   * Setup process lifecycle handlers: error, exit, signals.
-   */
-  function setupProcessLifecycle(
-    child: ChildProcess,
-    reject: (err: Error) => void,
-  ): void {
+  /** Drain the queue, then exit. Falls back to a hard exit on timeout. */
+  function drainAndExit(exitCode: number): void {
+    const drainTimeout = setTimeout(() => {
+      logger.warn("In-flight translations did not complete, exiting");
+      process.exit(exitCode);
+    }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
+    drainTimeout.unref();
+
+    serverQueue
+      .drain()
+      .then(() => {
+        clearTimeout(drainTimeout);
+        process.exit(exitCode);
+      })
+      .catch(() => {
+        process.exit(exitCode);
+      });
+  }
+
+  /** Setup process lifecycle handlers: error, exit, signals. */
+  function setupProcessLifecycle(child: ChildProcess, reject: (err: Error) => void): void {
     child.on("error", (err) => {
       logger.error(`Child process error: ${err.message}`);
       reject(err);
     });
-
-    // Graceful shutdown on signals
-    let shutdownInProgress = false;
-    const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 5000;
 
     child.on("exit", (code, signal) => {
       const reason = signal ? `signal ${signal}` : `code ${code}`;
@@ -304,59 +337,37 @@ export function createStdioProxy(
       if (stats.toolCallsTranslated > 0) {
         logger.info(
           `[final] Translated ${stats.toolCallsTranslated} tool calls | ` +
-          `total saved: ~${stats.tokensSaved} tok`,
+            `total saved: ~${stats.tokensSaved} tok`,
         );
       }
 
-      // Proper exit code: child's code, or 128+signal for signal kills
-      const sigNum = signal
-        ? (constants.signals as Record<string, number>)[signal] ?? 0
-        : 0;
-      const exitCode = code ?? (signal ? 128 + sigNum : 1);
-
-      // Drain in-flight translations before exiting
-      const drainTimeout = setTimeout(() => {
-        logger.warn("In-flight translations did not complete, exiting");
-        process.exit(exitCode);
-      }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
-      drainTimeout.unref();
-
-      serverQueue
-        .then(() => {
-          clearTimeout(drainTimeout);
-          process.exit(exitCode);
-        })
-        .catch(() => {
-          process.exit(exitCode);
-        });
+      drainAndExit(computeExitCode(code, signal));
     });
 
+    let shutdownInProgress = false;
     const shutdown = (sig: NodeJS.Signals) => {
       if (shutdownInProgress) return;
       shutdownInProgress = true;
 
       logger.info(`Received ${sig}, attempting graceful shutdown...`);
 
-      // Forward signal to child process so it can shut down gracefully
+      // Forward signal to child so it can shut down gracefully.
       try {
         child.kill(sig);
       } catch {
-        // Child may already be dead
+        // Child may already be dead.
       }
-
-      // Also close stdin to signal child to finish
       child.stdin?.end();
 
-      // Wait for graceful exit, then force kill if needed
+      // Force kill if child does not exit in time.
       const forceKillTimer = setTimeout(() => {
-        logger.warn(`Child did not exit after ${GRACEFUL_SHUTDOWN_TIMEOUT_MS}ms, force killing...`);
+        logger.warn(
+          `Child did not exit after ${GRACEFUL_SHUTDOWN_TIMEOUT_MS}ms, force killing...`,
+        );
         child.kill("SIGKILL");
       }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
-
-      // Don't let the timer keep the process alive
       forceKillTimer.unref();
 
-      // Clear timer if child exits gracefully
       child.once("exit", () => {
         clearTimeout(forceKillTimer);
       });
@@ -379,25 +390,27 @@ export function createStdioProxy(
             env: process.env,
           });
         } catch (err) {
-          reject(err);
+          reject(err instanceof Error ? err : new Error(String(err)));
           return;
         }
 
         if (!child.stdin || !child.stdout || !child.stderr) {
-          reject(new Error(
-            `Failed to open stdio pipes for child process '${command} ${args.join(" ")}'. ` +
-            `Verify the command exists on your PATH and is executable. ` +
-            `Try running the command directly to confirm it works before wrapping it with mercury.`
-          ));
+          reject(
+            new Error(
+              `Failed to open stdio pipes for child process '${command}'. ` +
+                `Verify the command exists and is executable.`,
+            ),
+          );
           return;
         }
 
-        logger.info(`Started child process: ${command} ${args.join(" ")} (pid: ${child.pid})`);
+        logger.info(
+          `Started child process: ${command} ${args.join(" ")} (pid: ${child.pid})`,
+        );
 
         // Attach error listeners to all child stdio streams. Without these,
         // an EPIPE (e.g. child crashes mid-write) becomes an unhandled
-        // 'error' event and terminates the proxy. We log and rely on the
-        // child 'exit' handler for orderly shutdown.
+        // 'error' event and terminates the proxy.
         child.stdin.on("error", (err) => {
           logger.warn(`Child stdin error: ${err.message}`);
         });
@@ -408,15 +421,12 @@ export function createStdioProxy(
           logger.warn(`Child stderr error: ${err.message}`);
         });
 
-        // Setup I/O streams
         setupClientStream(child);
         setupServerStream(child);
         child.stderr.pipe(process.stderr);
-
-        // Setup lifecycle handlers
         setupProcessLifecycle(child, reject);
 
-        // Resolve immediately — the proxy is running
+        // Resolve immediately — the proxy is running.
         resolve();
       });
     },

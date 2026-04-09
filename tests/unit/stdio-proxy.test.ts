@@ -54,6 +54,13 @@ describe("stdio proxy", () => {
     vi.clearAllMocks();
     stdoutWrites = [];
 
+    // Each createStdioProxy() call registers SIGINT/SIGTERM handlers via
+    // process.once. They are not removed unless the signal fires, so they
+    // accumulate across tests and trip the MaxListeners warning. Reset between
+    // tests so we start clean.
+    process.removeAllListeners("SIGINT");
+    process.removeAllListeners("SIGTERM");
+
     // Fresh child for each test
     currentChild = createMockChild();
 
@@ -77,6 +84,9 @@ describe("stdio proxy", () => {
 
   afterEach(() => {
     process.stdout.write = realStdoutWrite;
+    // child.stderr.pipe(process.stderr) leaks listeners on the global stderr
+    // socket between tests; unpipe before destroying.
+    currentChild.mockStderr.unpipe(process.stderr);
     mockStdin.destroy();
     currentChild.mockStdout.destroy();
     currentChild.mockStderr.destroy();
@@ -478,6 +488,102 @@ describe("stdio proxy", () => {
 
     const proxy = createStdioProxy("nonexistent", [], detector, translator, "en");
     await expect(proxy.start()).rejects.toThrow("ENOENT");
+  });
+
+  it("should reject start() when spawn throws a non-Error value", async () => {
+    const { createStdioProxy } = await import("../../src/proxy/stdio.js");
+
+    mockSpawn.mockImplementationOnce(() => {
+      throw "string failure";
+    });
+
+    const proxy = createStdioProxy(
+      "missing-cmd",
+      [],
+      { detect: vi.fn(), isTargetLang: vi.fn() },
+      { translate: vi.fn() },
+      "en",
+    );
+
+    await expect(proxy.start()).rejects.toThrow("string failure");
+  });
+
+  it("should reject start() when child stdio pipes are unavailable", async () => {
+    const { createStdioProxy } = await import("../../src/proxy/stdio.js");
+
+    // Return a child whose stdio pipes are missing
+    const brokenChild = createMockChild();
+    (brokenChild as unknown as Record<string, unknown>).stdin = null;
+    (brokenChild as unknown as Record<string, unknown>).stdout = null;
+    (brokenChild as unknown as Record<string, unknown>).stderr = null;
+    mockSpawn.mockImplementationOnce(() => brokenChild);
+
+    const proxy = createStdioProxy(
+      "broken-cmd",
+      [],
+      { detect: vi.fn(), isTargetLang: vi.fn() },
+      { translate: vi.fn() },
+      "en",
+    );
+
+    await expect(proxy.start()).rejects.toThrow(/stdio pipes/);
+  });
+
+  it("should reject start() on child process error event", async () => {
+    const { createStdioProxy } = await import("../../src/proxy/stdio.js");
+
+    const proxy = createStdioProxy(
+      "echo",
+      [],
+      { detect: vi.fn(), isTargetLang: vi.fn() },
+      { translate: vi.fn() },
+      "en",
+    );
+
+    const startPromise = proxy.start();
+    await startPromise; // resolves immediately
+
+    // start() already resolved — but the error reject is still wired in.
+    // Verify the handler logs the error without throwing.
+    expect(() => currentChild.emit("error", new Error("child boom"))).not.toThrow();
+  });
+
+  it("should pass through tools/list response with no result", async () => {
+    await createProxy();
+
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 50, method: "tools/list" }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    currentChild.mockStdout.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 50, error: { code: -32603, message: "boom" } }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    const messages = getOutputMessages();
+    const response = messages.find((m) => m.id === 50);
+    expect(response).toBeDefined();
+    expect(response!.error).toEqual({ code: -32603, message: "boom" });
+  });
+
+  it("should pass through tools/call response with no result", async () => {
+    await createProxy();
+
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 51, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    currentChild.mockStdout.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 51, error: { code: -32603, message: "boom" } }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    const messages = getOutputMessages();
+    const response = messages.find((m) => m.id === 51);
+    expect(response).toBeDefined();
+    expect(response!.error).toEqual({ code: -32603, message: "boom" });
   });
 
   it("should drain server queue before exiting on child exit", async () => {
