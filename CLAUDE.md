@@ -41,7 +41,7 @@ Mercury wraps an MCP server as a stdio proxy, intercepting JSON-RPC 2.0 messages
 ### Key design decisions
 
 - **Stdio proxy** (`src/proxy/stdio.ts`): Spawns child MCP server process, pipes stdin/stdout/stderr. Intercepts JSON-RPC responses, translates `tools/call` results, strips `outputSchema` from `tools/list` responses.
-- **Request tracker** (`src/proxy/tracker.ts`): Maps JSON-RPC request IDs to method names (like tooner's `wait.go`). Used to identify which responses correspond to `tools/call` or `tools/list` requests.
+- **Request tracker** (`src/proxy/tracker.ts`): Maps JSON-RPC request IDs to method names so the proxy knows which responses correspond to `tools/call` or `tools/list` requests. Has TTL eviction (60s) and a 1000-entry capacity cap to prevent unbounded growth on misbehaving clients.
 - **Tool result transform** (`src/transform/tool-result.ts`): Translates text content blocks in MCP tool results. For JSON content, recursively walks the structure and translates natural-language string values (skips URLs, paths, dates, short identifiers). Skips code blocks and error results. Returns transform statistics.
 - **Detector interface** (`src/detector/index.ts`): Abstracts language detection. Only implementation is franc-based (`franc.ts`). For short text (< `minDetectLength`), uses Unicode script-based detection (Hiragana/Katakana → Japanese, Hangul → Korean, CJK → Chinese, etc.) before falling back to "undetermined". Longer text uses franc's trigram analysis.
 - **Translator interface** (`src/translator/index.ts`): Abstracts translation backends. Two implementations: `google-free.ts` (no API key, default) and `haiku.ts` (uses Claude Haiku via Anthropic SDK).

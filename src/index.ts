@@ -21,7 +21,8 @@ function createTranslator(config: Config): Translator {
       return createHaikuTranslator(config.auth, config.haikuModel);
     default:
       throw new Error(
-        `Unsupported backend: '${config.backend}'. Valid options: 'google-free', 'haiku'`
+        `Unsupported backend: '${config.backend}'. ` +
+        `Set MERCURY_BACKEND to 'google-free' (default, no API key) or 'haiku' (requires ANTHROPIC_API_KEY).`
       );
   }
 }
@@ -105,6 +106,8 @@ async function main() {
   if (!parsed.childCommand) {
     console.error("Error: No child command specified.");
     console.error("Usage: mercury -- <command> [args...]");
+    console.error("Example: mercury -- npx your-mcp-server");
+    console.error("Run 'mercury --help' for more details.");
     process.exit(1);
   }
 

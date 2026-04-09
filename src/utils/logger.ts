@@ -35,6 +35,17 @@ function write(formatted: string): void {
   }
 }
 
+/**
+ * Process-wide logger for Mercury.
+ *
+ * Writes to stderr by default to keep stdout clean for JSON-RPC traffic.
+ * Set `MERCURY_LOG_FILE` to redirect output to a file (useful when stderr is
+ * swallowed by the MCP host, e.g. Claude Code). Set `MERCURY_LOG_LEVEL` to
+ * `debug`, `info`, `warn`, or `error` (default: `info`).
+ *
+ * Log level and file destination are read from environment variables once at
+ * module load time, so changing them at runtime has no effect.
+ */
 export const logger = {
   debug(message: string): void {
     if (shouldLog("debug")) {
