@@ -1,6 +1,6 @@
 {
   "name": "@lambda-script/mercury",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Translation proxy for Claude Code - transparently translates non-English text to reduce token consumption",
   "type": "module",
   "bin": {
