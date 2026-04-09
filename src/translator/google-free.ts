@@ -49,55 +49,87 @@ function getErrorMessage(err: unknown): string {
 }
 
 /**
- * Adjust a split index so it never falls between the two halves of a UTF-16
- * surrogate pair. Splitting mid-pair would corrupt non-BMP characters
- * (emoji, rare CJK) by leaving an unpaired surrogate in each chunk.
+ * A chunk plus the separator that originally followed it in the source text.
+ * Tracking the separator out-of-band lets us reassemble the translated chunks
+ * losslessly, instead of clobbering paragraph breaks (\n\n) and sentence
+ * spaces with a synthetic "\n".
  */
-function safeSplitIndex(text: string, idx: number): number {
+interface Chunk {
+  readonly text: string;
+  /** Original separator that followed this chunk; "" for the final chunk. */
+  readonly separator: string;
+}
+
+/**
+ * If hard-splitting at `idx` would land between a UTF-16 surrogate pair
+ * (e.g. an emoji or a CJK character above the BMP), back off by one so the
+ * pair stays intact. Returns a safe split index ≤ `idx`.
+ */
+function safeHardSplitIndex(text: string, idx: number): number {
   if (idx <= 0 || idx >= text.length) return idx;
-  const code = text.charCodeAt(idx);
-  // Low surrogate at idx means idx-1 is its high surrogate; back up so the
-  // pair stays together in the next chunk.
-  if (code >= 0xdc00 && code <= 0xdfff) return idx - 1;
+  const high = text.charCodeAt(idx - 1);
+  const low = text.charCodeAt(idx);
+  if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) {
+    return idx - 1;
+  }
   return idx;
 }
 
 /**
- * Split text into chunks at paragraph/sentence boundaries,
- * each under MAX_CHUNK_CHARS.
+ * Split text into chunks at paragraph/sentence boundaries, each under
+ * MAX_CHUNK_CHARS. Returns chunks paired with the separator that originally
+ * followed them in the source, so the translated output can be reassembled
+ * without losing the original whitespace structure.
  */
-function splitIntoChunks(text: string): string[] {
+function splitIntoChunks(text: string): Chunk[] {
   if (text.length <= MAX_CHUNK_CHARS) {
-    return [text];
+    return [{ text, separator: "" }];
   }
 
-  const chunks: string[] = [];
+  const chunks: Chunk[] = [];
   let remaining = text;
 
-  while (remaining.length > 0) {
-    if (remaining.length <= MAX_CHUNK_CHARS) {
-      chunks.push(remaining);
-      break;
+  while (remaining.length > MAX_CHUNK_CHARS) {
+    let splitIdx = -1;
+    let separator = "";
+
+    // Paragraph boundary (\n\n)
+    const paraIdx = remaining.lastIndexOf("\n\n", MAX_CHUNK_CHARS);
+    if (paraIdx > 0) {
+      splitIdx = paraIdx;
+      separator = "\n\n";
     }
 
-    // Try to split at paragraph boundary (\n\n)
-    let splitIdx = remaining.lastIndexOf("\n\n", MAX_CHUNK_CHARS);
-    if (splitIdx <= 0) {
-      // Try single newline
-      splitIdx = remaining.lastIndexOf("\n", MAX_CHUNK_CHARS);
-    }
-    if (splitIdx <= 0) {
-      // Try sentence boundary (. followed by space)
-      splitIdx = remaining.lastIndexOf(". ", MAX_CHUNK_CHARS);
-      if (splitIdx > 0) splitIdx += 1; // include the period
-    }
-    if (splitIdx <= 0) {
-      // Hard split as last resort — guard against splitting a surrogate pair.
-      splitIdx = safeSplitIndex(remaining, MAX_CHUNK_CHARS);
+    // Single newline
+    if (splitIdx < 0) {
+      const nlIdx = remaining.lastIndexOf("\n", MAX_CHUNK_CHARS);
+      if (nlIdx > 0) {
+        splitIdx = nlIdx;
+        separator = "\n";
+      }
     }
 
-    chunks.push(remaining.slice(0, splitIdx));
-    remaining = remaining.slice(splitIdx).trimStart();
+    // Sentence boundary (period followed by space)
+    if (splitIdx < 0) {
+      const sentIdx = remaining.lastIndexOf(". ", MAX_CHUNK_CHARS);
+      if (sentIdx > 0) {
+        splitIdx = sentIdx + 1; // keep the period in this chunk
+        separator = " ";
+      }
+    }
+
+    // Hard split as last resort, avoiding surrogate pairs
+    if (splitIdx < 0) {
+      splitIdx = safeHardSplitIndex(remaining, MAX_CHUNK_CHARS);
+      separator = "";
+    }
+
+    chunks.push({ text: remaining.slice(0, splitIdx), separator });
+    remaining = remaining.slice(splitIdx + separator.length);
+  }
+
+  if (remaining.length > 0) {
+    chunks.push({ text: remaining, separator: "" });
   }
 
   return chunks;
@@ -165,12 +197,12 @@ export function createGoogleFreeTranslator(): Translator {
         `Translating ${text.length} chars from ${fromLang} to ${to} (${chunks.length} chunk${chunks.length > 1 ? "s" : ""})`,
       );
 
-      const translated: string[] = [];
+      let result = "";
       for (const chunk of chunks) {
-        translated.push(await translateChunk(chunk, fromLang, to));
+        const translated = await translateChunk(chunk.text, fromLang, to);
+        result += translated + chunk.separator;
       }
 
-      const result = translated.join("\n");
       logger.debug(`Translation complete: ${result.length} chars`);
       return result;
     },
