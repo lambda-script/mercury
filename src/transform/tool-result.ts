@@ -49,10 +49,10 @@ const MIN_JSON_STRING_LENGTH = 20;
 const MAX_JSON_DEPTH = 50;
 
 // Pre-compiled patterns for isStructuralString (called per JSON string value).
+// Char-code prefilters in isStructuralString gate these so most strings never
+// run any regex at all.
 const URL_PATTERN = /^https?:\/\//;
-const FILE_PATH_PATTERN = /^[/.~]/;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}/;
-const WHITESPACE_PATTERN = /\s/;
 
 // Find the index of the first non-whitespace character.
 // Avoids allocating a trimmed string copy just to check a prefix.
@@ -92,16 +92,24 @@ function tryParseJsonObject(text: string): { value: unknown } | null {
   }
 }
 
-// Heuristic: does the string look like a URL, path, or identifier?
+// Heuristic: does the string look like a URL, path, or ISO date?
+// Callers guarantee text.length >= MIN_JSON_STRING_LENGTH, so no
+// short-identifier branch is needed here.
 function isStructuralString(text: string): boolean {
-  // URLs
-  if (URL_PATTERN.test(text)) return true;
-  // File paths
-  if (FILE_PATH_PATTERN.test(text) && !text.includes(" ")) return true;
-  // ISO dates
-  if (ISO_DATE_PATTERN.test(text)) return true;
-  // Identifiers (no spaces, short)
-  if (text.length < MIN_JSON_STRING_LENGTH && !WHITESPACE_PATTERN.test(text)) return true;
+  const ch = text.charCodeAt(0);
+
+  // URL: starts with 'h' (https?:// is the only allowed prefix).
+  if (ch === 0x68 /* h */) {
+    return URL_PATTERN.test(text);
+  }
+  // File path: starts with '/', '.', or '~' and contains no space.
+  if (ch === 0x2f /* / */ || ch === 0x2e /* . */ || ch === 0x7e /* ~ */) {
+    return text.indexOf(" ") === -1;
+  }
+  // ISO date: starts with a digit (YYYY-MM-DD…).
+  if (ch >= 0x30 && ch <= 0x39) {
+    return ISO_DATE_PATTERN.test(text);
+  }
   return false;
 }
 
