@@ -327,4 +327,126 @@ describe("Google Free Translator", () => {
     expect(result).toBe("テスト");
     expect(mockTranslate).toHaveBeenCalledTimes(3);
   });
+
+  it("should split at single newline when no paragraph break exists", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    // Two lines joined by single \n, totaling > 4500 chars, no \n\n boundary
+    const line = "a".repeat(3000);
+    const text = `${line}\n${line}`;
+
+    mockTranslate.mockImplementation(async (chunk: string) => ({
+      text: `T(${chunk.length})`,
+    }));
+
+    const translator = createGoogleFreeTranslator();
+    const result = await translator.translate(text, "auto", "en");
+
+    expect(mockTranslate.mock.calls.length).toBe(2);
+    // Joined output preserves both chunks
+    expect(result).toContain("T(3000)");
+  });
+
+  it("should split at sentence boundary when no newline exists", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    // No newlines anywhere; only ". " sentence boundaries, > 4500 chars
+    const sentence = "abc def ghi jkl mno pqr stu vwx yz. ".repeat(150); // ~5400 chars
+
+    mockTranslate.mockImplementation(async (chunk: string) => ({
+      text: `T(${chunk.length})`,
+    }));
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate(sentence, "auto", "en");
+
+    // Must split into at least 2 chunks
+    expect(mockTranslate.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // Each chunk's last non-space character should be a period (sentence boundary)
+    for (const call of mockTranslate.mock.calls.slice(0, -1)) {
+      const chunk = call[0] as string;
+      expect(chunk.trimEnd().endsWith(".")).toBe(true);
+    }
+  });
+
+  it("should hard-split when no boundary exists", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    // 6000 contiguous characters, no whitespace, no period, no newline
+    const blob = "x".repeat(6000);
+
+    mockTranslate.mockImplementation(async (chunk: string) => ({
+      text: `T(${chunk.length})`,
+    }));
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate(blob, "auto", "en");
+
+    // Hard split at MAX_CHUNK_CHARS (4500) → 2 chunks: 4500 + 1500
+    expect(mockTranslate.mock.calls.length).toBe(2);
+    expect((mockTranslate.mock.calls[0][0] as string).length).toBe(4500);
+    expect((mockTranslate.mock.calls[1][0] as string).length).toBe(1500);
+  });
+
+  it("should fall back to original text per-chunk when one chunk fails", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    // Two paragraphs → two chunks
+    const para = "p".repeat(3000);
+    const text = `${para}\n\n${para}`;
+
+    let callIdx = 0;
+    mockTranslate.mockImplementation(async () => {
+      callIdx++;
+      if (callIdx === 1) return { text: "OK1" };
+      // Second chunk fails on every retry
+      throw new Error("rate limited");
+    });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate(text, "auto", "en");
+
+    // Drain backoff timers for the failing second chunk
+    await flushRetryTimers();
+
+    const result = await promise;
+    // First chunk translates successfully, second falls back to original
+    expect(result).toContain("OK1");
+    expect(result).toContain(para);
+    // First chunk: 1 call, second chunk: 3 retries → 4 total
+    expect(mockTranslate).toHaveBeenCalledTimes(4);
+  });
+
+  it("should handle empty string input", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    mockTranslate.mockResolvedValueOnce({ text: "" });
+
+    const translator = createGoogleFreeTranslator();
+    const result = await translator.translate("", "auto", "en");
+
+    // Empty text → single chunk of "" → one call
+    expect(result).toBe("");
+    expect(mockTranslate).toHaveBeenCalledTimes(1);
+  });
+
+  it("should pass an explicit source language through unchanged", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    mockTranslate.mockResolvedValueOnce({ text: "Hello" });
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate("Bonjour", "fr", "en");
+
+    expect(mockTranslate).toHaveBeenCalledWith("Bonjour", expect.objectContaining({
+      from: "fr",
+      to: "en",
+    }));
+  });
 });

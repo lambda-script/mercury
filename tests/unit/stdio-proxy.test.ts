@@ -312,6 +312,174 @@ describe("stdio proxy", () => {
     await new Promise((r) => setTimeout(r, 50));
   });
 
+  it("should preserve message ordering across concurrent translations", async () => {
+    // Use detectors that mark all text as needing translation
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+
+    // Each translation resolves at a different speed:
+    // First call resolves last, second middle, third first.
+    // Despite this, the proxy must serialize and emit responses in order.
+    const delays = [60, 30, 10];
+    let callIdx = 0;
+    const translator = {
+      translate: vi.fn(() => {
+        const idx = callIdx++;
+        return new Promise<string>((resolve) => {
+          setTimeout(() => resolve(`translated-${idx}`), delays[idx]);
+        });
+      }),
+    };
+
+    await createProxy(detector, translator);
+
+    // Track three tools/call requests
+    for (const id of [101, 102, 103]) {
+      mockStdin.write(
+        JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: {} }) + "\n",
+      );
+    }
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Server emits three responses back-to-back
+    for (const id of [101, 102, 103]) {
+      currentChild.mockStdout.write(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: `テキスト${id}` }] },
+        }) + "\n",
+      );
+    }
+
+    // Wait for all translations to drain
+    await new Promise((r) => setTimeout(r, 200));
+
+    const messages = getOutputMessages().filter((m) => m.id !== undefined);
+    // Order must be preserved: 101 → 102 → 103, even though their
+    // translations resolve in opposite order.
+    expect(messages.map((m) => m.id)).toEqual([101, 102, 103]);
+    // And each got the translation that was running for its slot.
+    expect((messages[0].result as { content: { text: string }[] }).content[0].text).toBe("translated-0");
+    expect((messages[1].result as { content: { text: string }[] }).content[0].text).toBe("translated-1");
+    expect((messages[2].result as { content: { text: string }[] }).content[0].text).toBe("translated-2");
+  });
+
+  it("should handle a large response with many text content blocks", async () => {
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    const translator = {
+      translate: vi.fn(async (text: string) => text.toUpperCase()),
+    };
+
+    const proxy = await createProxy(detector, translator);
+
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 50, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Construct a result with 25 text blocks, each long enough to be translated
+    const blocks = Array.from({ length: 25 }, (_, i) => ({
+      type: "text",
+      text: `これは長い日本語のブロック番号 ${i} です。翻訳されるべき内容です。`,
+    }));
+    currentChild.mockStdout.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 50, result: { content: blocks } }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(translator.translate).toHaveBeenCalledTimes(25);
+    const messages = getOutputMessages();
+    const response = messages.find((m) => m.id === 50);
+    const out = (response!.result as { content: { text: string }[] }).content;
+    expect(out).toHaveLength(25);
+    expect(out[0].text).toBe(out[0].text.toUpperCase());
+    expect(proxy.stats.toolCallsTranslated).toBe(1);
+  });
+
+  it("should pass through server-to-client requests (e.g., sampling)", async () => {
+    await createProxy();
+
+    // Server sends a request to the client (sampling/createMessage), not a response.
+    // It has both id AND method, so isResponse() is false.
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 7,
+        method: "sampling/createMessage",
+        params: { messages: [] },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    const messages = getOutputMessages();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].method).toBe("sampling/createMessage");
+    expect(messages[0].id).toBe(7);
+  });
+
+  it("should handle multiple JSON-RPC messages on consecutive lines from server", async () => {
+    await createProxy();
+
+    // Three messages in one write — readline should split them
+    const payload =
+      JSON.stringify({ jsonrpc: "2.0", id: 1, result: { ok: 1 } }) + "\n" +
+      JSON.stringify({ jsonrpc: "2.0", id: 2, result: { ok: 2 } }) + "\n" +
+      JSON.stringify({ jsonrpc: "2.0", id: 3, result: { ok: 3 } }) + "\n";
+    currentChild.mockStdout.write(payload);
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const messages = getOutputMessages();
+    expect(messages).toHaveLength(3);
+    expect(messages.map((m) => m.id)).toEqual([1, 2, 3]);
+  });
+
+  it("should not crash when client sends notifications (no id)", async () => {
+    await createProxy();
+
+    // Notification from client to server: has method, no id
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Should be forwarded to child stdin verbatim
+    const childStdinData: string[] = [];
+    currentChild.mockStdin.on("data", (chunk: Buffer) => {
+      childStdinData.push(chunk.toString());
+    });
+
+    // Send another to confirm forwarding still works
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 99, method: "ping" }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(childStdinData.join("")).toContain('"ping"');
+  });
+
+  it("should reject when spawn() throws synchronously", async () => {
+    mockSpawn.mockImplementationOnce(() => {
+      throw new Error("ENOENT: command not found");
+    });
+
+    const { createStdioProxy } = await import("../../src/proxy/stdio.js");
+    const detector = {
+      detect: vi.fn(() => ({ lang: "eng", confidence: 1 })),
+      isTargetLang: vi.fn(() => true),
+    };
+    const translator = { translate: vi.fn(async (t: string) => t) };
+
+    const proxy = createStdioProxy("nonexistent", [], detector, translator, "en");
+    await expect(proxy.start()).rejects.toThrow("ENOENT");
+  });
+
   it("should drain server queue before exiting on child exit", async () => {
     // Use a translator with a delay to simulate in-flight work
     let resolveTranslation: (value: string) => void;
