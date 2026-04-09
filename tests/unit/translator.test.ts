@@ -212,4 +212,31 @@ describe("Google Free Translator", () => {
 
     expect(mockTranslate).toHaveBeenCalledTimes(1);
   });
+
+  it("should time out a hung attempt and fall back to original text", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // All attempts hang forever — simulates a stalled HTTPS connection.
+    // Without the per-attempt timeout this would block the proxy queue
+    // indefinitely; with it, each attempt rejects after 15s and we fall
+    // back to the original text after exhausting retries.
+    mockTranslate.mockImplementation(() => new Promise(() => {}));
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate("テスト", "auto", "en");
+
+    // 3 attempts × 15s timeout + 500ms + 1000ms backoff
+    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    const result = await promise;
+
+    expect(result).toBe("テスト");
+    expect(mockTranslate).toHaveBeenCalledTimes(3);
+  });
 });
