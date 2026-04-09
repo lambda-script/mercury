@@ -253,6 +253,7 @@ async function translateText(
   const parsed = tryParseJsonObject(text);
   if (parsed !== null) {
     logger.debug(`Translating strings inside JSON block (${text.length} chars)`);
+    const blocksBefore = stats.blocksTranslated;
     const translated = await translateJsonStrings(
       parsed.value,
       detector,
@@ -260,6 +261,13 @@ async function translateText(
       targetLang,
       stats,
     );
+    // If the walker didn't translate any string (all values were short,
+    // structural, or already in target language), the parsed tree is
+    // structurally identical to the input — return the original text to
+    // skip the JSON.stringify cost and preserve the original formatting.
+    if (stats.blocksTranslated === blocksBefore) {
+      return text;
+    }
     return JSON.stringify(translated, null, 2);
   }
 

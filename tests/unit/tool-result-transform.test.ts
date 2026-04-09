@@ -73,6 +73,25 @@ describe("transformToolResult", () => {
     expect(translator.translate).not.toHaveBeenCalled();
   });
 
+  it("should preserve original JSON text when no strings were translated", async () => {
+    // Compact, no whitespace — would be reformatted by JSON.stringify(_, null, 2).
+    const jsonText = '{"key":"value","number":42}';
+    const result = {
+      content: [{ type: "text" as const, text: jsonText }],
+    };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    // Identity preserved: no re-serialization, no whitespace changes.
+    expect(transformed.content[0].text).toBe(jsonText);
+  });
+
   it("should translate long strings inside JSON", async () => {
     const longJaText = "これは長い日本語のテキストです。翻訳される必要があります。";
     const jsonText = JSON.stringify({ url: "https://example.com", body_md: longJaText });
