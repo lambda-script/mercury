@@ -71,16 +71,22 @@ function isCodeBlock(text: string): boolean {
   return text.startsWith("```", firstNonWsIndex(text));
 }
 
-// Try to parse as JSON. Returns parsed value or null.
-function tryParseJson(text: string): unknown | null {
+/**
+ * Try to parse `text` as a JSON object or array.
+ *
+ * Returns `{ value }` on success and `null` on any failure (too large, not
+ * starting with `{`/`[`, or `JSON.parse` threw). The wrapper distinguishes
+ * "parse failed" from "parsed value happens to be falsy".
+ */
+function tryParseJsonObject(text: string): { value: unknown } | null {
   if (text.length > MAX_JSON_CHECK_BYTES) return null;
   const idx = firstNonWsIndex(text);
   const ch = text.charCodeAt(idx);
-  // Check for '{' (0x7B) or '[' (0x5B)
+  // Only attempt parse on '{' (0x7B) or '[' (0x5B); skips primitives & garbage.
   if (ch !== 0x7b && ch !== 0x5b) return null;
   try {
-    // JSON.parse natively skips leading whitespace
-    return JSON.parse(text) as unknown;
+    // JSON.parse natively skips leading whitespace.
+    return { value: JSON.parse(text) as unknown };
   } catch {
     return null;
   }
@@ -129,9 +135,30 @@ async function translateAndTrack(
 }
 
 /**
+ * Decide whether a string value found inside a JSON document is worth
+ * translating. Skips short / structural / code-block / already-target-lang
+ * strings.
+ */
+function shouldTranslateJsonString(
+  text: string,
+  detector: Detector,
+  targetLang: string,
+): boolean {
+  if (text.length < MIN_JSON_STRING_LENGTH) return false;
+  if (isStructuralString(text)) return false;
+  if (isCodeBlock(text)) return false;
+  if (detector.isTargetLang(text, targetLang)) return false;
+  return true;
+}
+
+/**
  * Recursively walk a JSON value and translate string values that
  * appear to contain natural language (non-English) text.
  * Returns a new value (never mutates input).
+ *
+ * Sibling values inside arrays *and* objects are translated concurrently
+ * via Promise.all so a single deeply-structured payload is not bottlenecked
+ * on serial round-trips.
  */
 async function translateJsonStrings(
   value: unknown,
@@ -141,23 +168,18 @@ async function translateJsonStrings(
   stats: StatsAccumulator,
   depth = 0,
 ): Promise<unknown> {
-  // Prevent stack overflow on deeply nested JSON
+  // Prevent stack overflow on deeply nested JSON.
   if (depth > MAX_JSON_DEPTH) {
     logger.debug(`Max depth ${MAX_JSON_DEPTH} exceeded, stopping translation`);
     return value;
   }
-  if (typeof value === "string") {
-    // Skip short, structural, or already-target-lang strings
-    if (value.length < MIN_JSON_STRING_LENGTH) return value;
-    if (isStructuralString(value)) return value;
-    if (isCodeBlock(value)) return value;
-    if (detector.isTargetLang(value, targetLang)) return value;
 
+  if (typeof value === "string") {
+    if (!shouldTranslateJsonString(value, detector, targetLang)) return value;
     return translateAndTrack(value, detector, translator, targetLang, stats);
   }
 
   if (Array.isArray(value)) {
-    // Process array items in parallel for better performance
     return Promise.all(
       value.map((item) =>
         translateJsonStrings(item, detector, translator, targetLang, stats, depth + 1),
@@ -166,9 +188,15 @@ async function translateJsonStrings(
   }
 
   if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value);
+    const translatedValues = await Promise.all(
+      entries.map(([, val]) =>
+        translateJsonStrings(val, detector, translator, targetLang, stats, depth + 1),
+      ),
+    );
     const result: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value)) {
-      result[key] = await translateJsonStrings(val, detector, translator, targetLang, stats, depth + 1);
+    for (let i = 0; i < entries.length; i++) {
+      result[entries[i][0]] = translatedValues[i];
     }
     return result;
   }
@@ -214,10 +242,16 @@ async function translateText(
   }
 
   // JSON content: translate string values inside the structure
-  const parsed = tryParseJson(text);
+  const parsed = tryParseJsonObject(text);
   if (parsed !== null) {
     logger.debug(`Translating strings inside JSON block (${text.length} chars)`);
-    const translated = await translateJsonStrings(parsed, detector, translator, targetLang, stats);
+    const translated = await translateJsonStrings(
+      parsed.value,
+      detector,
+      translator,
+      targetLang,
+      stats,
+    );
     return JSON.stringify(translated, null, 2);
   }
 

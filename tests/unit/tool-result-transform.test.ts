@@ -377,6 +377,175 @@ describe("transformToolResult", () => {
     expect(parsed[0].name).toBe(`[EN] ${longJaText}`);
     expect(stats.blocksTranslated).toBe(1);
   });
+
+  it("should translate sibling object values concurrently", async () => {
+    const longTextA = "これは最初の長い日本語テキストです。並列で翻訳されます。";
+    const longTextB = "二番目の長い日本語テキストも同時に翻訳されるはずです。";
+    const longTextC = "三番目のテキストも並列に処理される必要があります。";
+    const jsonText = JSON.stringify({ a: longTextA, b: longTextB, c: longTextC });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    // Translator that records the order it was invoked.
+    const callOrder: string[] = [];
+    const translator: Translator = {
+      translate: vi.fn(async (text: string) => {
+        callOrder.push(text);
+        // Yield once so concurrent calls can interleave; if the walker were
+        // sequential they would still be issued in order, but they would
+        // each await before the next is even queued.
+        await Promise.resolve();
+        return `[EN] ${text}`;
+      }),
+    };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.a).toBe(`[EN] ${longTextA}`);
+    expect(parsed.b).toBe(`[EN] ${longTextB}`);
+    expect(parsed.c).toBe(`[EN] ${longTextC}`);
+    expect(stats.blocksTranslated).toBe(3);
+    // All three translate() invocations should have started before any
+    // resolved — i.e. they were issued in a single tick.
+    expect(callOrder).toEqual([longTextA, longTextB, longTextC]);
+    expect(translator.translate).toHaveBeenCalledTimes(3);
+  });
+
+  it("should stop walking JSON when nesting exceeds max depth", async () => {
+    // Build a deeply nested object: 60 levels (limit is 50).
+    let nested: unknown = "これは深くネストされた長い日本語テキストです。翻訳されるべきではありません。";
+    for (let i = 0; i < 60; i++) {
+      nested = { level: nested };
+    }
+    const jsonText = JSON.stringify(nested);
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const translator = createMockTranslator();
+    await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    // The string is past the depth limit, so the walker should bail out
+    // before reaching it and translate() should never be invoked.
+    expect(translator.translate).not.toHaveBeenCalled();
+  });
+
+  it("should treat malformed JSON as plain text and translate", async () => {
+    // Starts with '{' so tryParseJsonObject *attempts* JSON.parse and hits the
+    // catch path, then falls through to plain-text translation.
+    const malformedJson = "{これは壊れたJSONですが、長い日本語のテキストです";
+    const result = { content: [{ type: "text" as const, text: malformedJson }] };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0].text).toBe(`[EN] ${malformedJson}`);
+    expect(stats.blocksTranslated).toBe(1);
+  });
+
+  it("should not attempt JSON parse on payloads above the size cap", async () => {
+    // > 64KB of '[' followed by junk: short-circuits before JSON.parse even runs.
+    const oversize = "[" + "x".repeat(70 * 1024);
+    const result = { content: [{ type: "text" as const, text: oversize }] };
+
+    // Mark as non-target so it falls through to plain-text translation.
+    const { stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    expect(stats.blocksTranslated).toBe(1);
+  });
+
+  it("should skip long URLs inside JSON values", async () => {
+    // Long URL (>20 chars) inside JSON: hits the isStructuralString branch
+    // of shouldTranslateJsonString rather than the length early-return.
+    const longUrl = "https://example.com/very/long/path/to/something";
+    const longJaText = "これは長い日本語のテキストで、翻訳されるべきです。";
+    const jsonText = JSON.stringify({ url: longUrl, body: longJaText });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.url).toBe(longUrl); // URL preserved verbatim
+    expect(parsed.body).toBe(`[EN] ${longJaText}`);
+  });
+
+  it("should skip code blocks nested inside JSON values", async () => {
+    // String inside JSON that starts with ``` exercises the isCodeBlock
+    // branch of shouldTranslateJsonString.
+    const codeStr = "```python\nprint('hello world')\nreturn 1\n```";
+    const jsonText = JSON.stringify({ snippet: codeStr });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const translator = createMockTranslator();
+    await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    expect(translator.translate).not.toHaveBeenCalled();
+  });
+
+  it("should skip target-language strings inside JSON values", async () => {
+    // Long English string inside JSON exercises the isTargetLang branch.
+    const englishText = "This is a long English sentence that should not be translated.";
+    const jsonText = JSON.stringify({ body: englishText });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const translator = createMockTranslator();
+    await transformToolResult(
+      result,
+      createMockDetector(true),
+      translator,
+      "en",
+    );
+
+    expect(translator.translate).not.toHaveBeenCalled();
+  });
+
+  it("should treat all-whitespace text as a non-code-block (plain text path)", async () => {
+    // All-whitespace string exercises the firstNonWsIndex fallthrough.
+    // It's also (debatably) "target language", so should pass through as skipped.
+    const wsText = "    \n\t   ";
+    const result = { content: [{ type: "text" as const, text: wsText }] };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(true), // pretend the detector says it's English
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0].text).toBe(wsText);
+    expect(stats.blocksSkipped).toBe(1);
+  });
 });
 
 describe("formatTransformStats", () => {
@@ -413,5 +582,35 @@ describe("formatTransformStats", () => {
     const formatted = formatTransformStats(stats);
     expect(formatted).toContain("No translation needed");
     expect(formatted).toContain("3 blocks skipped");
+  });
+
+  it("should fall back to the raw lang code when not in LANG_NAMES", () => {
+    const stats: TransformStats = {
+      blocksTranslated: 1,
+      blocksSkipped: 0,
+      charsOriginal: 10,
+      charsTransformed: 8,
+      tokensOriginal: 5,
+      tokensTransformed: 4,
+      detectedLang: "xyz", // not a real ISO 639-3 code
+    };
+
+    const formatted = formatTransformStats(stats);
+    expect(formatted).toContain("[xyz]");
+  });
+
+  it("should report 0% when tokensOriginal is zero but blocks were translated", () => {
+    const stats: TransformStats = {
+      blocksTranslated: 1,
+      blocksSkipped: 0,
+      charsOriginal: 0,
+      charsTransformed: 0,
+      tokensOriginal: 0,
+      tokensTransformed: 0,
+      detectedLang: "jpn",
+    };
+
+    const formatted = formatTransformStats(stats);
+    expect(formatted).toContain("-0%");
   });
 });
