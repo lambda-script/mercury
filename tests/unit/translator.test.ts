@@ -201,41 +201,92 @@ describe("Google Free Translator", () => {
     expect(result).toContain("[translated]");
   });
 
-  it("should not split a surrogate pair when hard-splitting large text", async () => {
+  it("should preserve paragraph breaks (\\n\\n) across chunk boundaries", async () => {
+    // Passthrough mock so we can verify lossless reassembly.
+    mockTranslate.mockImplementation(async (text: string) => ({ text }));
+
+    const para = "x".repeat(2000);
+    const input = `${para}\n\n${para}\n\n${para}`;
+
     const { createGoogleFreeTranslator } = await import(
       "../../src/translator/google-free.js"
     );
+    const result = await createGoogleFreeTranslator().translate(input, "auto", "en");
 
-    // Build a >4500 char string with NO whitespace/newlines/sentence boundaries
-    // so the chunker is forced into the hard-split branch. Place an emoji
-    // (a surrogate pair: high D83D + low DE00) straddling the 4500 boundary.
-    const fillerLen = 4499; // emoji starts at index 4499 -> high surrogate at 4499, low at 4500
-    const filler = "a".repeat(fillerLen);
-    const tail = "b".repeat(100);
-    const text = `${filler}\u{1F600}${tail}`;
+    expect(result).toBe(input);
+    expect(mockTranslate.mock.calls.length).toBeGreaterThan(1);
+  });
 
-    const captured: string[] = [];
-    mockTranslate.mockImplementation(async (input: string) => {
-      captured.push(input);
-      return { text: input };
-    });
+  it("should preserve single-newline boundaries across chunks", async () => {
+    mockTranslate.mockImplementation(async (text: string) => ({ text }));
 
-    const translator = createGoogleFreeTranslator();
-    await translator.translate(text, "auto", "en");
+    // Single \n separators only — exercises the second split branch.
+    const line = "x".repeat(2000);
+    const input = `${line}\n${line}\n${line}`;
 
-    // Every chunk must be valid UTF-16: no lone surrogates at chunk edges.
-    for (const chunk of captured) {
-      if (chunk.length > 0) {
-        const first = chunk.charCodeAt(0);
-        const last = chunk.charCodeAt(chunk.length - 1);
-        // First char must not be a lone low surrogate
-        expect(first >= 0xdc00 && first <= 0xdfff).toBe(false);
-        // Last char must not be a lone high surrogate
-        expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
-      }
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    const result = await createGoogleFreeTranslator().translate(input, "auto", "en");
+
+    expect(result).toBe(input);
+  });
+
+  it("should preserve sentence-boundary spaces across chunks", async () => {
+    mockTranslate.mockImplementation(async (text: string) => ({ text }));
+
+    // ". " separators only (no newlines) — exercises the third split branch.
+    const sentence = "x".repeat(2000) + ".";
+    const input = `${sentence} ${sentence} ${sentence}`;
+
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    const result = await createGoogleFreeTranslator().translate(input, "auto", "en");
+
+    expect(result).toBe(input);
+  });
+
+  it("should hard-split text with no natural boundaries without losing data", async () => {
+    mockTranslate.mockImplementation(async (text: string) => ({ text }));
+
+    // No newlines, no ". " — forces the hard-split fallback path.
+    const input = "x".repeat(5000);
+
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    const result = await createGoogleFreeTranslator().translate(input, "auto", "en");
+
+    expect(result).toBe(input);
+    expect(mockTranslate.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("should not split a UTF-16 surrogate pair on hard-split", async () => {
+    mockTranslate.mockImplementation(async (text: string) => ({ text }));
+
+    // 😀 (U+1F600) is encoded as a surrogate pair (high 0xD83D, low 0xDE00).
+    // Place it at indices 4499/4500 so a naive hard-split at MAX_CHUNK_CHARS
+    // (4500) would land between the high and low surrogates and corrupt it.
+    const input = "x".repeat(4499) + "\uD83D\uDE00" + "x".repeat(700);
+
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    const result = await createGoogleFreeTranslator().translate(input, "auto", "en");
+
+    expect(result).toBe(input);
+
+    // Sanity check: no chunk handed to the translator may start or end on a
+    // lone surrogate.
+    for (const call of mockTranslate.mock.calls) {
+      const chunk = call[0] as string;
+      if (chunk.length === 0) continue;
+      const first = chunk.charCodeAt(0);
+      const last = chunk.charCodeAt(chunk.length - 1);
+      expect(first >= 0xdc00 && first <= 0xdfff).toBe(false); // lone low at start
+      expect(last >= 0xd800 && last <= 0xdbff).toBe(false);   // lone high at end
     }
-    // The emoji must be intact in the joined output
-    expect(captured.join("")).toContain("\u{1F600}");
   });
 
   it("should not split small text", async () => {
