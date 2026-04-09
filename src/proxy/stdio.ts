@@ -366,8 +366,9 @@ export function createStdioProxy(
 
         if (!child.stdin || !child.stdout || !child.stderr) {
           reject(new Error(
-            `Failed to open stdio pipes for child process '${command}'. ` +
-            `Verify the command exists and is executable.`
+            `Failed to open stdio pipes for child process '${command} ${args.join(" ")}'. ` +
+            `Verify the command exists on your PATH and is executable. ` +
+            `Try running the command directly to confirm it works before wrapping it with mercury.`
           ));
           return;
         }

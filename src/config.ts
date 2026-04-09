@@ -44,7 +44,8 @@ export function loadConfig(): Config {
   if (backend === "haiku" && !auth) {
     throw new Error(
       "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is required when using the 'haiku' backend. " +
-      "Set one of these in the 'env' field of your .mcp.json configuration."
+      "Set one of these in the 'env' field of your .mcp.json configuration — " +
+      "Claude Code does NOT automatically forward ANTHROPIC_* variables to MCP server processes."
     );
   }
 
