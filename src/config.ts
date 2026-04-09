@@ -48,12 +48,21 @@ export function loadConfig(): Config {
     );
   }
 
+  const minDetectLengthRaw = process.env.MERCURY_MIN_DETECT_LENGTH ?? "20";
+  const minDetectLength = parseInt(minDetectLengthRaw, 10);
+  if (!Number.isInteger(minDetectLength) || minDetectLength < 1) {
+    throw new Error(
+      `MERCURY_MIN_DETECT_LENGTH must be a positive integer, got '${minDetectLengthRaw}'. ` +
+      `Example: MERCURY_MIN_DETECT_LENGTH=20`
+    );
+  }
+
   return {
     backend,
     sourceLang: process.env.MERCURY_SOURCE_LANG ?? "auto",
     targetLang: process.env.MERCURY_TARGET_LANG ?? "en",
     auth,
-    minDetectLength: parseInt(process.env.MERCURY_MIN_DETECT_LENGTH ?? "20", 10),
+    minDetectLength,
     haikuModel: process.env.MERCURY_HAIKU_MODEL ?? "claude-haiku-4-5-20251001",
   };
 }

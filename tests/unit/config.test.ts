@@ -72,6 +72,22 @@ describe("loadConfig", () => {
     expect(config.auth).toEqual({ type: "api_key", apiKey: "test-api-key" });
   });
 
+  it("should throw if MERCURY_MIN_DETECT_LENGTH is not a positive integer", () => {
+    process.env.MERCURY_MIN_DETECT_LENGTH = "not-a-number";
+
+    expect(() => loadConfig()).toThrow(
+      "MERCURY_MIN_DETECT_LENGTH must be a positive integer, got 'not-a-number'",
+    );
+  });
+
+  it("should throw if MERCURY_MIN_DETECT_LENGTH is zero", () => {
+    process.env.MERCURY_MIN_DETECT_LENGTH = "0";
+
+    expect(() => loadConfig()).toThrow(
+      "MERCURY_MIN_DETECT_LENGTH must be a positive integer, got '0'",
+    );
+  });
+
   it("should use custom environment variables", () => {
     process.env.MERCURY_BACKEND = "deepl";
     process.env.MERCURY_SOURCE_LANG = "ja";
