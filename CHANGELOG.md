@@ -1,5 +1,37 @@
 # Changelog
 
+## [2.0.1](https://github.com/lambda-script/mercury/compare/mercury-v2.0.0...mercury-v2.0.1) (2026-04-13)
+
+
+### Bug Fixes
+
+* **config:** validate MERCURY_MIN_DETECT_LENGTH is a positive integer ([#49](https://github.com/lambda-script/mercury/issues/49)) ([11ce728](https://github.com/lambda-script/mercury/commit/11ce728cb559254ac584284a7b40b6e7c399aac2))
+* **deps:** regenerate package-lock.json to fix CI ([#63](https://github.com/lambda-script/mercury/issues/63)) ([5e001d6](https://github.com/lambda-script/mercury/commit/5e001d65acb3bf6c4553c5c2b6ab7118752ec6c6))
+* **proxy:** handle EPIPE and stream errors without crashing ([#42](https://github.com/lambda-script/mercury/issues/42)) ([3d1799a](https://github.com/lambda-script/mercury/commit/3d1799a7e322491cb6b7e8bbacf1154830af897e))
+* **translator:** add per-attempt timeout to prevent indefinite hangs ([#59](https://github.com/lambda-script/mercury/issues/59)) ([ea17642](https://github.com/lambda-script/mercury/commit/ea17642ce8cf4f543e38b2b5a4afad283b7a015b))
+* **translator:** preserve boundary chars when chunking large text ([#60](https://github.com/lambda-script/mercury/issues/60)) ([a31125c](https://github.com/lambda-script/mercury/commit/a31125c71e9f8b3c081259e9459e15afb83d951a))
+* **translator:** preserve surrogate pairs when hard-splitting chunks ([#51](https://github.com/lambda-script/mercury/issues/51)) ([de55a3e](https://github.com/lambda-script/mercury/commit/de55a3e3f661c91e89f2fd7f8bdeb3f4308b898b))
+
+
+### Performance Improvements
+
+* **transform:** skip JSON re-stringify when no strings were translated ([#61](https://github.com/lambda-script/mercury/issues/61)) ([6f838fb](https://github.com/lambda-script/mercury/commit/6f838fb305a6b070a8d34a59fc5aaacc3370c9ee))
+
+
+### Code Refactoring
+
+* **transform:** parallelize JSON object walker and tighten types ([#58](https://github.com/lambda-script/mercury/issues/58)) ([24a2327](https://github.com/lambda-script/mercury/commit/24a23277841c03475417252bcb017c08583b3116))
+
+
+### Documentation
+
+* clarify docs and error messages for new contributors ([#57](https://github.com/lambda-script/mercury/issues/57)) ([d31a9cb](https://github.com/lambda-script/mercury/commit/d31a9cba05e1d682e63e63e4af9f31eb71c615d6))
+
+
+### Tests
+
+* expand edge-case coverage for proxy, transform, and translators ([#55](https://github.com/lambda-script/mercury/issues/55)) ([2364bc9](https://github.com/lambda-script/mercury/commit/2364bc94a9ab0cb3da5ab46329d58383db59d05e))
+
 ## [2.0.0](https://github.com/lambda-script/mercury/compare/mercury-v1.0.1...mercury-v2.0.0) (2026-04-06)
 
 
