@@ -312,6 +312,34 @@ describe("transformToolResult", () => {
     expect(stats.blocksSkipped).toBe(1);
   });
 
+  it("should pass through text blocks with non-string text field", async () => {
+    // Malformed MCP server output: type is "text" but text is missing or not a string.
+    // This is an external API boundary — must not throw.
+    const result = {
+      content: [
+        { type: "text" as const, text: undefined as unknown as string },
+        { type: "text" as const, text: 123 as unknown as string },
+        { type: "text" as const, text: "正常な日本語のテキストです。これは翻訳されるべきです。" },
+      ],
+    };
+
+    const translator = createMockTranslator();
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    // Malformed blocks pass through unchanged
+    expect(transformed.content[0].text).toBeUndefined();
+    expect(transformed.content[1].text).toBe(123);
+    // Valid text block is still translated
+    expect(transformed.content[2].text).toContain("[EN]");
+    expect(stats.blocksTranslated).toBe(1);
+  });
+
   it("should handle empty content array", async () => {
     const result = { content: [] };
     const translator = createMockTranslator();

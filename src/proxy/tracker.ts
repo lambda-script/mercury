@@ -4,6 +4,8 @@
  * which responses correspond to tools/call or tools/list requests.
  */
 
+import { logger } from "../utils/logger.js";
+
 const MAX_PENDING = 1000;
 const ENTRY_TTL_MS = 60_000; // 1 minute
 
@@ -51,6 +53,11 @@ export function createRequestTracker(): RequestTracker {
         }
 
         if (oldestKey !== undefined) {
+          const evicted = pending.get(oldestKey);
+          logger.warn(
+            `Tracker at capacity (${MAX_PENDING}), evicting request ${String(oldestKey)} (${evicted?.method}). ` +
+              `Translation may be skipped for this response.`,
+          );
           pending.delete(oldestKey);
         }
       }

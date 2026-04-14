@@ -586,6 +586,52 @@ describe("stdio proxy", () => {
     expect(response!.error).toEqual({ code: -32603, message: "boom" });
   });
 
+  it("should use EPIPE-safe writeMessage in server error fallback", async () => {
+    // When handleServerMessage throws AND stdout is closed, the fallback
+    // must not crash. Before the fix, raw process.stdout.write was used.
+    const detector = {
+      detect: vi.fn(() => { throw new Error("boom"); }),
+      isTargetLang: vi.fn(() => { throw new Error("boom"); }),
+    };
+    const translator = {
+      translate: vi.fn(async () => { throw new Error("boom"); }),
+    };
+
+    await createProxy(detector, translator);
+
+    // Track a tools/call so handleServerMessage attempts translation
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 60, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Make stdout.write throw (simulating closed pipe / EPIPE)
+    const writeSpy = process.stdout.write as ReturnType<typeof vi.fn>;
+    writeSpy.mockImplementation(() => {
+      throw new Error("write EPIPE");
+    });
+
+    // Server responds — handleToolCallResponse will throw (detector throws),
+    // then the error fallback calls writeMessage which also throws (EPIPE).
+    // The serial queue must catch this without crashing.
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 60,
+        result: { content: [{ type: "text", text: "some text" }] },
+      }) + "\n",
+    );
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    // If we got here without an unhandled exception, the fix works.
+    // Restore stdout.write so subsequent writes (e.g. in afterEach) work.
+    process.stdout.write = vi.fn((chunk: unknown) => {
+      stdoutWrites.push(String(chunk));
+      return true;
+    }) as unknown as typeof process.stdout.write;
+  });
+
   it("should drain server queue before exiting on child exit", async () => {
     // Use a translator with a delay to simulate in-flight work
     let resolveTranslation: (value: string) => void;
