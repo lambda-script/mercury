@@ -352,22 +352,24 @@ export async function transformToolResult(
     return { content: result, stats };
   }
 
-  const translatedContent: McpContent[] = [];
-  for (const block of toolResult.content) {
-    if (block.type === "text") {
-      const translated = await translateText(
-        block.text,
-        detector,
-        translator,
-        targetLang,
-        stats,
-      );
-      translatedContent.push({ ...block, text: translated });
-    } else {
-      // image, resource, etc — pass through
-      translatedContent.push(block);
-    }
-  }
+  // Translate text blocks concurrently (mirrors the parallel approach used
+  // inside translateJsonStrings for sibling values). Non-text blocks pass
+  // through unchanged. Promise.all preserves ordering.
+  const translatedContent = await Promise.all(
+    toolResult.content.map(async (block): Promise<McpContent> => {
+      if (block.type === "text") {
+        const translated = await translateText(
+          block.text,
+          detector,
+          translator,
+          targetLang,
+          stats,
+        );
+        return { ...block, text: translated };
+      }
+      return block;
+    }),
+  );
 
   return {
     content: { ...toolResult, content: translatedContent },
