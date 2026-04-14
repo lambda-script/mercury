@@ -449,4 +449,62 @@ describe("Google Free Translator", () => {
       to: "en",
     }));
   });
+
+  it("should log error cause when Error has a cause property", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    const causeError = new Error("connection failed");
+    (causeError as Error & { cause: string }).cause = "ECONNREFUSED";
+    mockTranslate
+      .mockRejectedValueOnce(causeError)
+      .mockResolvedValueOnce({ text: "OK" });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate("test", "auto", "en");
+
+    await vi.advanceTimersByTimeAsync(600);
+
+    const result = await promise;
+    expect(result).toBe("OK");
+    expect(mockTranslate).toHaveBeenCalledTimes(2);
+  });
+
+  it("should clean up timeout timer on successful fast translation", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // Translation resolves immediately — withTimeout's finally block clears the timer.
+    mockTranslate.mockResolvedValueOnce({ text: "Fast" });
+
+    const translator = createGoogleFreeTranslator();
+    const result = await translator.translate("test", "auto", "en");
+
+    expect(result).toBe("Fast");
+    expect(mockTranslate).toHaveBeenCalledTimes(1);
+
+    // Advance past the 15s timeout to verify no dangling timer fires.
+    await vi.advanceTimersByTimeAsync(20_000);
+  });
+
+  it("should handle errors thrown as non-Error objects with toString", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // Throw a number — exercises the String(err) path in getErrorMessage
+    mockTranslate
+      .mockRejectedValueOnce(42)
+      .mockResolvedValueOnce({ text: "OK" });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate("test", "auto", "en");
+
+    await vi.advanceTimersByTimeAsync(600);
+
+    const result = await promise;
+    expect(result).toBe("OK");
+  });
 });

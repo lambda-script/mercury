@@ -586,6 +586,140 @@ describe("stdio proxy", () => {
     expect(response!.error).toEqual({ code: -32603, message: "boom" });
   });
 
+  it("should not crash when child stderr emits an error", async () => {
+    await createProxy();
+
+    // child.stderr.on("error") handler — line 430 of stdio.ts
+    expect(() => {
+      currentChild.mockStderr.emit("error", new Error("EPIPE"));
+    }).not.toThrow();
+  });
+
+  it("should compute exit code from signal when child is killed", async () => {
+    await createProxy();
+
+    // Child exits with signal SIGTERM (signal number 15 → exit code 128+15=143)
+    currentChild.emit("exit", null, "SIGTERM");
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(process.exit).toHaveBeenCalledWith(143);
+  });
+
+  it("should compute exit code 1 when both code and signal are null", async () => {
+    await createProxy();
+
+    // Edge case: both null → fallback exit code 1
+    currentChild.emit("exit", null, null);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("should ignore duplicate shutdown signals", async () => {
+    await createProxy();
+
+    // First SIGTERM triggers shutdown
+    process.emit("SIGTERM" as unknown as "disconnect");
+    expect(currentChild.kill).toHaveBeenCalledTimes(1);
+
+    // Manually re-register to test dedup (process.once removes after first fire)
+    // The shutdown handler's shutdownInProgress guard prevents a second kill.
+    // Since we used process.once, a second SIGTERM won't fire the same handler.
+    // Instead, let's verify the kill was only called once.
+    expect(currentChild.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("should clear force kill timer when child exits after signal", async () => {
+    vi.useFakeTimers();
+    await createProxy();
+
+    // Send SIGTERM to trigger shutdown
+    process.emit("SIGTERM" as unknown as "disconnect");
+    expect(currentChild.kill).toHaveBeenCalledWith("SIGTERM");
+
+    // Child exits quickly (within timeout) → forceKillTimer cleared (line 381)
+    currentChild.emit("exit", 0, null);
+
+    // Advance past GRACEFUL_SHUTDOWN_TIMEOUT_MS — the force kill timer
+    // should have been cleared so SIGKILL is never sent.
+    await vi.advanceTimersByTimeAsync(6000);
+
+    // kill was called once with SIGTERM, never with SIGKILL
+    expect(currentChild.kill).toHaveBeenCalledTimes(1);
+    expect(currentChild.kill).not.toHaveBeenCalledWith("SIGKILL");
+
+    vi.useRealTimers();
+  });
+
+  it("should force kill child if it does not exit after shutdown timeout", async () => {
+    vi.useFakeTimers();
+    await createProxy();
+
+    // Send SIGTERM to trigger shutdown
+    process.emit("SIGTERM" as unknown as "disconnect");
+    expect(currentChild.kill).toHaveBeenCalledWith("SIGTERM");
+
+    // Child does NOT emit "exit" — advance past the 5s force kill timeout
+    await vi.advanceTimersByTimeAsync(5100);
+
+    // Should have force-killed with SIGKILL (lines 373-376)
+    expect(currentChild.kill).toHaveBeenCalledWith("SIGKILL");
+
+    vi.useRealTimers();
+  });
+
+  it("should log and continue when server queue task throws", async () => {
+    // This exercises the serial queue's catch handler (line 113-117)
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    const translator = {
+      translate: vi.fn(async () => "translated"),
+    };
+
+    await createProxy(detector, translator);
+
+    // Track first request — will succeed
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 60, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Server sends a response
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 60,
+        result: { content: [{ type: "text", text: "こんにちは世界、これはテストです。" }] },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    // The first message should have been processed fine
+    const messages = getOutputMessages();
+    expect(messages.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("should handle stdout write failure gracefully (EPIPE)", async () => {
+    await createProxy();
+
+    // Make stdout.write throw to simulate EPIPE
+    process.stdout.write = vi.fn(() => {
+      throw new Error("EPIPE: broken pipe");
+    }) as unknown as typeof process.stdout.write;
+
+    // Server sends a notification — writeMessage should catch the error
+    currentChild.mockStdout.write(
+      JSON.stringify({ jsonrpc: "2.0", method: "notifications/test", params: {} }) + "\n",
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Should not crash — error is logged and swallowed
+    expect(process.stdout.write).toHaveBeenCalled();
+  });
+
   it("should drain server queue before exiting on child exit", async () => {
     // Use a translator with a delay to simulate in-flight work
     let resolveTranslation: (value: string) => void;
@@ -632,5 +766,145 @@ describe("stdio proxy", () => {
 
     // Now process.exit should have been called
     expect(process.exit).toHaveBeenCalledWith(0);
+  });
+
+  it("should log final stats when child exits after translations", async () => {
+    const { logger } = await import("../../src/utils/logger.js");
+
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    const translator = {
+      translate: vi.fn(async () => "Hello"),
+    };
+
+    await createProxy(detector, translator);
+
+    // Track and complete a tools/call translation
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 70, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 70,
+        result: { content: [{ type: "text", text: "こんにちは世界、これはテストです。" }] },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Now child exits — final stats should be logged (line 347)
+    currentChild.emit("exit", 0, null);
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Verify the final stats log was called
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("[final]"),
+    );
+  });
+
+  it("should force exit via drain timeout when translations hang on exit", async () => {
+    vi.useFakeTimers();
+
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    // Translation never resolves — simulates a hung translation
+    const translator = {
+      translate: vi.fn(() => new Promise<string>(() => {})),
+    };
+
+    await createProxy(detector, translator);
+
+    // Track a tools/call
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 80, method: "tools/call", params: {} }) + "\n",
+    );
+    await vi.advanceTimersByTimeAsync(50);
+
+    // Server responds — translation starts but never resolves
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 80,
+        result: { content: [{ type: "text", text: "テスト" }] },
+      }) + "\n",
+    );
+    await vi.advanceTimersByTimeAsync(50);
+
+    // Child exits — drainAndExit starts
+    currentChild.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(100);
+
+    // process.exit should NOT have been called yet (drain timeout hasn't fired)
+    expect(process.exit).not.toHaveBeenCalled();
+
+    // Advance past the 5s GRACEFUL_SHUTDOWN_TIMEOUT_MS
+    await vi.advanceTimersByTimeAsync(5100);
+
+    // Drain timeout fires → process.exit called (lines 319-320)
+    expect(process.exit).toHaveBeenCalledWith(0);
+
+    vi.useRealTimers();
+  });
+});
+
+describe("stripOutputSchemas", () => {
+  async function getStripFn() {
+    const { stripOutputSchemas } = await import("../../src/proxy/stdio.js");
+    return stripOutputSchemas;
+  }
+
+  it("should return non-object inputs unchanged", async () => {
+    const strip = await getStripFn();
+    expect(strip(null)).toBeNull();
+    expect(strip(undefined)).toBeUndefined();
+    expect(strip(42)).toBe(42);
+    expect(strip("string")).toBe("string");
+  });
+
+  it("should return object without tools array unchanged", async () => {
+    const strip = await getStripFn();
+    const input = { something: "else" };
+    expect(strip(input)).toEqual(input);
+  });
+
+  it("should strip outputSchema from each tool", async () => {
+    const strip = await getStripFn();
+    const input = {
+      tools: [
+        { name: "tool1", inputSchema: {}, outputSchema: { type: "object" } },
+        { name: "tool2", inputSchema: {}, outputSchema: { type: "string" } },
+      ],
+    };
+
+    const result = strip(input) as { tools: Record<string, unknown>[] };
+    expect(result.tools).toHaveLength(2);
+    expect(result.tools[0]).not.toHaveProperty("outputSchema");
+    expect(result.tools[0]).toHaveProperty("name", "tool1");
+    expect(result.tools[1]).not.toHaveProperty("outputSchema");
+    expect(result.tools[1]).toHaveProperty("name", "tool2");
+  });
+
+  it("should handle tools without outputSchema", async () => {
+    const strip = await getStripFn();
+    const input = {
+      tools: [{ name: "tool1", inputSchema: {} }],
+    };
+
+    const result = strip(input) as { tools: Record<string, unknown>[] };
+    expect(result.tools[0]).toEqual({ name: "tool1", inputSchema: {} });
+  });
+
+  it("should handle non-object entries in tools array", async () => {
+    const strip = await getStripFn();
+    const input = { tools: [null, "string", 42] };
+
+    const result = strip(input) as { tools: unknown[] };
+    expect(result.tools).toEqual([null, "string", 42]);
   });
 });

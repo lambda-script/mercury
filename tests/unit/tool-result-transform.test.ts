@@ -565,6 +565,141 @@ describe("transformToolResult", () => {
     expect(transformed.content[0].text).toBe(wsText);
     expect(stats.blocksSkipped).toBe(1);
   });
+
+  it("should skip file paths starting with / inside JSON values", async () => {
+    const longPath = "/home/user/projects/some-long-directory-name/file.txt";
+    const longJa = "これは長い日本語のテキストで、翻訳されるべきです。";
+    const jsonText = JSON.stringify({ path: longPath, body: longJa });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.path).toBe(longPath);
+    expect(parsed.body).toBe(`[EN] ${longJa}`);
+  });
+
+  it("should skip file paths starting with . inside JSON values", async () => {
+    const relPath = "./src/components/very-long-component-name/index.ts";
+    const longJa = "これは長い日本語のテキストで、翻訳されるべきです。";
+    const jsonText = JSON.stringify({ file: relPath, desc: longJa });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.file).toBe(relPath);
+    expect(parsed.desc).toBe(`[EN] ${longJa}`);
+  });
+
+  it("should skip file paths starting with ~ inside JSON values", async () => {
+    const tilPath = "~/Documents/long-directory-name/another-directory/file.md";
+    const longJa = "これは長い日本語のテキストで、翻訳されるべきです。";
+    const jsonText = JSON.stringify({ loc: tilPath, text: longJa });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.loc).toBe(tilPath);
+    expect(parsed.text).toBe(`[EN] ${longJa}`);
+  });
+
+  it("should NOT skip path-like strings that contain spaces", async () => {
+    // Path-like but has a space → not structural, gets translated
+    const pathWithSpace = "./some directory/with spaces/long enough to translate";
+    const jsonText = JSON.stringify({ path: pathWithSpace });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.path).toBe(`[EN] ${pathWithSpace}`);
+  });
+
+  it("should skip ISO date strings inside JSON values", async () => {
+    const isoDate = "2024-03-15T10:30:00.000Z";
+    const longJa = "これは長い日本語のテキストで、翻訳されるべきです。";
+    const jsonText = JSON.stringify({ created: isoDate, body: longJa });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.created).toBe(isoDate);
+    expect(parsed.body).toBe(`[EN] ${longJa}`);
+  });
+
+  it("should NOT skip digit strings that don't match ISO date pattern", async () => {
+    // Starts with a digit but is not YYYY-MM-DD — isStructuralString returns false
+    const numericText = "12345 is a number that starts a long sentence for translation test";
+    const jsonText = JSON.stringify({ value: numericText });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.value).toBe(`[EN] ${numericText}`);
+  });
+
+  it("should pass through resource content blocks unchanged", async () => {
+    const result = {
+      content: [
+        { type: "resource" as const, resource: { uri: "file:///test.txt", text: "内容" } },
+        { type: "text" as const, text: "テストの説明文です" },
+      ],
+    };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0]).toEqual({
+      type: "resource",
+      resource: { uri: "file:///test.txt", text: "内容" },
+    });
+    expect(transformed.content[1].text).toBe("[EN] テストの説明文です");
+  });
 });
 
 describe("formatTransformStats", () => {
