@@ -1,5 +1,6 @@
 import translate from "google-translate-api-x";
 import type { Translator } from "./index.js";
+import { getErrorMessage } from "../utils/error.js";
 import { logger } from "../utils/logger.js";
 
 const MAX_RETRIES = 3;
@@ -40,13 +41,6 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   }
 }
 
-function getErrorMessage(err: unknown): string {
-  if (err instanceof Error) {
-    const cause = err.cause ? ` (cause: ${err.cause})` : "";
-    return `${err.message}${cause}`;
-  }
-  return String(err);
-}
 
 /**
  * A chunk plus the separator that originally followed it in the source text.
