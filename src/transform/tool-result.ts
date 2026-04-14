@@ -354,7 +354,7 @@ export async function transformToolResult(
 
   const translatedContent: McpContent[] = [];
   for (const block of toolResult.content) {
-    if (block.type === "text") {
+    if (block.type === "text" && typeof block.text === "string") {
       const translated = await translateText(
         block.text,
         detector,
@@ -364,7 +364,7 @@ export async function transformToolResult(
       );
       translatedContent.push({ ...block, text: translated });
     } else {
-      // image, resource, etc — pass through
+      // image, resource, malformed text blocks, etc — pass through
       translatedContent.push(block);
     }
   }

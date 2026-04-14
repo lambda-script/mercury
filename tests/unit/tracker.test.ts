@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createRequestTracker } from "../../src/proxy/tracker.js";
+import { logger } from "../../src/utils/logger.js";
+
+vi.mock("../../src/utils/logger.js", () => ({
+  logger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
 
 describe("RequestTracker", () => {
   it("should track and retrieve a request method by ID", () => {
@@ -110,6 +120,24 @@ describe("RequestTracker", () => {
       expect(tracker.take(0)).toBeUndefined();
       expect(tracker.take(1000)).toBe("tools/list");
       expect(tracker.take(1)).toBe("tools/call");
+    });
+
+    it("should log a warning when evicting at capacity", () => {
+      const tracker = createRequestTracker();
+
+      for (let i = 0; i < 1000; i++) {
+        tracker.track(i, "tools/call");
+      }
+
+      // This triggers capacity eviction of id=0
+      tracker.track(1000, "tools/list");
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Tracker at capacity"),
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Translation may be skipped"),
+      );
     });
 
     it("should evict expired entries before checking capacity", () => {

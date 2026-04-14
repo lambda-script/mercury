@@ -307,7 +307,8 @@ export function createStdioProxy(
             `Error handling server message: ${err instanceof Error ? err.message : String(err)}`,
           );
           // Forward original on error so the client still sees something.
-          process.stdout.write(line + "\n");
+          // Use writeMessage (EPIPE-safe) instead of raw stdout.write.
+          writeMessage(msg);
         }
       });
     });
