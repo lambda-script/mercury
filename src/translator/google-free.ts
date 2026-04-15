@@ -80,30 +80,35 @@ function safeHardSplitIndex(text: string, idx: number): number {
  * MAX_CHUNK_CHARS. Returns chunks paired with the separator that originally
  * followed them in the source, so the translated output can be reassembled
  * without losing the original whitespace structure.
+ *
+ * Uses index-based tracking instead of progressive string slicing to avoid
+ * O(n²) intermediate string allocations on large inputs.
  */
 function splitIntoChunks(text: string): Chunk[] {
-  if (text.length <= MAX_CHUNK_CHARS) {
+  const totalLen = text.length;
+  if (totalLen <= MAX_CHUNK_CHARS) {
     return [{ text, separator: "" }];
   }
 
   const chunks: Chunk[] = [];
-  let remaining = text;
+  let start = 0;
 
-  while (remaining.length > MAX_CHUNK_CHARS) {
+  while (totalLen - start > MAX_CHUNK_CHARS) {
+    const end = start + MAX_CHUNK_CHARS;
     let splitIdx = -1;
     let separator = "";
 
-    // Paragraph boundary (\n\n)
-    const paraIdx = remaining.lastIndexOf("\n\n", MAX_CHUNK_CHARS);
-    if (paraIdx > 0) {
+    // Paragraph boundary (\n\n) — search backwards from end within window.
+    const paraIdx = text.lastIndexOf("\n\n", end);
+    if (paraIdx > start) {
       splitIdx = paraIdx;
       separator = "\n\n";
     }
 
     // Single newline
     if (splitIdx < 0) {
-      const nlIdx = remaining.lastIndexOf("\n", MAX_CHUNK_CHARS);
-      if (nlIdx > 0) {
+      const nlIdx = text.lastIndexOf("\n", end);
+      if (nlIdx > start) {
         splitIdx = nlIdx;
         separator = "\n";
       }
@@ -111,8 +116,8 @@ function splitIntoChunks(text: string): Chunk[] {
 
     // Sentence boundary (period followed by space)
     if (splitIdx < 0) {
-      const sentIdx = remaining.lastIndexOf(". ", MAX_CHUNK_CHARS);
-      if (sentIdx > 0) {
+      const sentIdx = text.lastIndexOf(". ", end);
+      if (sentIdx > start) {
         splitIdx = sentIdx + 1; // keep the period in this chunk
         separator = " ";
       }
@@ -120,16 +125,16 @@ function splitIntoChunks(text: string): Chunk[] {
 
     // Hard split as last resort, avoiding surrogate pairs
     if (splitIdx < 0) {
-      splitIdx = safeHardSplitIndex(remaining, MAX_CHUNK_CHARS);
+      splitIdx = safeHardSplitIndex(text, end);
       separator = "";
     }
 
-    chunks.push({ text: remaining.slice(0, splitIdx), separator });
-    remaining = remaining.slice(splitIdx + separator.length);
+    chunks.push({ text: text.substring(start, splitIdx), separator });
+    start = splitIdx + separator.length;
   }
 
-  if (remaining.length > 0) {
-    chunks.push({ text: remaining, separator: "" });
+  if (start < totalLen) {
+    chunks.push({ text: text.substring(start), separator: "" });
   }
 
   return chunks;
@@ -197,12 +202,22 @@ export function createGoogleFreeTranslator(): Translator {
         `Translating ${text.length} chars from ${fromLang} to ${to} (${chunks.length} chunk${chunks.length > 1 ? "s" : ""})`,
       );
 
-      let result = "";
-      for (const chunk of chunks) {
-        const translated = await translateChunk(chunk.text, fromLang, to);
-        result += translated + chunk.separator;
+      // Single chunk fast path — avoid array allocation.
+      if (chunks.length === 1) {
+        const result = await translateChunk(chunks[0].text, fromLang, to);
+        logger.debug(`Translation complete: ${result.length} chars`);
+        return result;
       }
 
+      // Multiple chunks: collect into array and join to avoid O(n²)
+      // intermediate string concatenation.
+      const parts: string[] = [];
+      for (const chunk of chunks) {
+        parts.push(await translateChunk(chunk.text, fromLang, to));
+        if (chunk.separator) parts.push(chunk.separator);
+      }
+
+      const result = parts.join("");
       logger.debug(`Translation complete: ${result.length} chars`);
       return result;
     },
