@@ -565,6 +565,34 @@ describe("transformToolResult", () => {
     expect(transformed.content[0].text).toBe(wsText);
     expect(stats.blocksSkipped).toBe(1);
   });
+
+  it("should keep original text for a block whose translation fails", async () => {
+    const translator = {
+      translate: vi.fn()
+        .mockRejectedValueOnce(new Error("service unavailable"))
+        .mockImplementation(async (text: string) => `[EN] ${text}`),
+    };
+
+    const result = {
+      content: [
+        { type: "text" as const, text: "最初のブロック（失敗する）" },
+        { type: "text" as const, text: "二番目のブロック（成功する）" },
+      ],
+    };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    // First block kept original text due to translation error
+    expect(transformed.content[0].text).toBe("最初のブロック（失敗する）");
+    // Second block was translated successfully
+    expect(transformed.content[1].text).toBe("[EN] 二番目のブロック（成功する）");
+  });
 });
 
 describe("formatTransformStats", () => {

@@ -21,6 +21,11 @@ function isValidJsonRpcMessage(value: unknown): value is JsonRpcMessage {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Extract a human-readable message from an unknown thrown value. */
+function formatError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * Parse a line of text as JSON-RPC message.
  * Returns null if invalid or not a valid JSON-RPC message.
@@ -111,9 +116,7 @@ function createSerialQueue(label: string): SerialQueue {
   return {
     enqueue(task) {
       tail = tail.then(task).catch((err) => {
-        logger.error(
-          `[${label}] task error: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        logger.error(`[${label}] task error: ${formatError(err)}`);
       });
     },
     drain() {
@@ -175,9 +178,7 @@ export function createStdioProxy(
       process.stdout.write(JSON.stringify(message) + "\n");
     } catch (err) {
       // EPIPE if client closed stdout — log and continue rather than crash.
-      logger.warn(
-        `Failed to write to stdout: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logger.warn(`Failed to write to stdout: ${formatError(err)}`);
     }
   }
 
@@ -212,8 +213,7 @@ export function createStdioProxy(
 
       writeMessage({ ...msg, result: content });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logger.error(`Transform error: ${message}`);
+      logger.error(`Transform error: ${formatError(err)}`);
       writeMessage(msg); // Forward original on error
     }
   }
@@ -260,9 +260,7 @@ export function createStdioProxy(
     try {
       childStdin.write(JSON.stringify(msg) + "\n");
     } catch (err) {
-      logger.warn(
-        `Failed to write to child stdin: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logger.warn(`Failed to write to child stdin: ${formatError(err)}`);
     }
   }
 
@@ -304,7 +302,7 @@ export function createStdioProxy(
           await handleServerMessage(msg);
         } catch (err) {
           logger.error(
-            `Error handling server message: ${err instanceof Error ? err.message : String(err)}`,
+            `Error handling server message: ${formatError(err)}`,
           );
           // Forward original on error so the client still sees something.
           process.stdout.write(line + "\n");
