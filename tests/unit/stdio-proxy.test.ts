@@ -586,6 +586,160 @@ describe("stdio proxy", () => {
     expect(response!.error).toEqual({ code: -32603, message: "boom" });
   });
 
+  it("should guard against double shutdown signals", async () => {
+    await createProxy();
+
+    // First SIGTERM triggers shutdown
+    process.emit("SIGTERM" as unknown as "disconnect");
+    expect(currentChild.kill).toHaveBeenCalledWith("SIGTERM");
+
+    // Second SIGINT should be ignored (shutdownInProgress guard)
+    process.emit("SIGINT" as unknown as "disconnect");
+    // kill should still have been called only once (from the first signal)
+    expect(currentChild.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("should force kill child if it does not exit within timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      await createProxy();
+
+      // Trigger shutdown
+      process.emit("SIGTERM" as unknown as "disconnect");
+      expect(currentChild.kill).toHaveBeenCalledWith("SIGTERM");
+
+      // Child does NOT emit "exit" — advance past GRACEFUL_SHUTDOWN_TIMEOUT_MS (5000ms)
+      await vi.advanceTimersByTimeAsync(5001);
+
+      // Should have called kill("SIGKILL") after timeout
+      expect(currentChild.kill).toHaveBeenCalledWith("SIGKILL");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should clear force kill timer when child exits after signal", async () => {
+    vi.useFakeTimers();
+    try {
+      await createProxy();
+
+      // Trigger shutdown
+      process.emit("SIGTERM" as unknown as "disconnect");
+      expect(currentChild.kill).toHaveBeenCalledWith("SIGTERM");
+
+      // Child exits promptly before force kill timeout
+      currentChild.emit("exit", 0, null);
+
+      // Advance past timeout — SIGKILL should NOT have been called
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(currentChild.kill).not.toHaveBeenCalledWith("SIGKILL");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should not crash when process.stdout.write throws", async () => {
+    await createProxy();
+
+    // Replace stdout.write with one that throws (simulates EPIPE to client)
+    process.stdout.write = vi.fn(() => {
+      throw new Error("EPIPE");
+    }) as unknown as typeof process.stdout.write;
+
+    // Server sends a message — proxy tries to write to stdout which throws
+    currentChild.mockStdout.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 500, result: { ok: true } }) + "\n",
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Should not crash — error is caught in writeMessage
+  });
+
+  it("should not crash when child stderr emits an error", async () => {
+    await createProxy();
+
+    // Simulate an error on the child stderr stream
+    expect(() => {
+      currentChild.mockStderr.emit("error", new Error("stderr EPIPE"));
+    }).not.toThrow();
+  });
+
+  it("should compute exit code from signal as 128+signum", async () => {
+    await createProxy();
+
+    // Child killed by SIGTERM (signal 15) → exit code 128+15 = 143
+    currentChild.emit("exit", null, "SIGTERM");
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(process.exit).toHaveBeenCalledWith(143);
+  });
+
+  it("should log final stats when translations occurred before child exit", async () => {
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    const translator = {
+      translate: vi.fn(async () => "Hello"),
+    };
+
+    const proxy = await createProxy(detector, translator);
+
+    // Track and translate a tools/call
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 60, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 60,
+        result: { content: [{ type: "text", text: "こんにちは世界、これはテストです。" }] },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(proxy.stats.toolCallsTranslated).toBe(1);
+
+    // Child exits — should log final stats
+    currentChild.emit("exit", 0, null);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(process.exit).toHaveBeenCalledWith(0);
+  });
+
+  it("should increment toolCallsPassedThrough when text is already target language", async () => {
+    const detector = {
+      detect: vi.fn(() => ({ lang: "eng", confidence: 1 })),
+      isTargetLang: vi.fn(() => true),
+    };
+    const translator = {
+      translate: vi.fn(async (text: string) => text),
+    };
+
+    const proxy = await createProxy(detector, translator);
+
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 70, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 70,
+        result: { content: [{ type: "text", text: "Already English text here." }] },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(proxy.stats.toolCallsPassedThrough).toBe(1);
+    expect(proxy.stats.toolCallsTranslated).toBe(0);
+  });
+
   it("should drain server queue before exiting on child exit", async () => {
     // Use a translator with a delay to simulate in-flight work
     let resolveTranslation: (value: string) => void;

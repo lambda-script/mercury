@@ -548,6 +548,156 @@ describe("transformToolResult", () => {
     expect(translator.translate).not.toHaveBeenCalled();
   });
 
+  it("should skip file paths (starting with /) inside JSON values", async () => {
+    const longPath = "/usr/local/bin/some-long-command-name-here";
+    const longJaText = "これは長い日本語のテキストで、翻訳されるべきです。";
+    const jsonText = JSON.stringify({ path: longPath, desc: longJaText });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.path).toBe(longPath); // Path preserved verbatim
+    expect(parsed.desc).toBe(`[EN] ${longJaText}`);
+  });
+
+  it("should skip relative paths (starting with .) inside JSON values", async () => {
+    const relativePath = "./src/components/Header.tsx";
+    const longJaText = "これは長い日本語のテキストで、翻訳されるべきです。";
+    const jsonText = JSON.stringify({ file: relativePath, body: longJaText });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.file).toBe(relativePath);
+    expect(parsed.body).toBe(`[EN] ${longJaText}`);
+  });
+
+  it("should skip home-relative paths (starting with ~) inside JSON values", async () => {
+    const homePath = "~/Documents/project/README.md";
+    const longJaText = "これは長い日本語のテキストで、翻訳されるべきです。";
+    const jsonText = JSON.stringify({ location: homePath, info: longJaText });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.location).toBe(homePath);
+  });
+
+  it("should translate path-like strings that contain spaces", async () => {
+    // Starts with '/' but contains spaces → not a structural path
+    const notAPath = "/this is not really a path because it has spaces in it";
+    const jsonText = JSON.stringify({ text: notAPath });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const translator = createMockTranslator();
+    await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    // Should be translated because it has spaces (not a file path)
+    expect(translator.translate).toHaveBeenCalled();
+  });
+
+  it("should skip ISO date strings inside JSON values", async () => {
+    const dateStr = "2024-03-15T10:30:00.000Z";
+    const longJaText = "これは長い日本語のテキストで、翻訳されるべきです。";
+    const jsonText = JSON.stringify({ createdAt: dateStr, summary: longJaText });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.createdAt).toBe(dateStr);
+    expect(parsed.summary).toBe(`[EN] ${longJaText}`);
+  });
+
+  it("should translate strings starting with digits that are not ISO dates", async () => {
+    // Starts with digit but doesn't match YYYY-MM-DD pattern
+    const notDate = "42 is the answer to everything in the universe";
+    const jsonText = JSON.stringify({ answer: notDate });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const translator = createMockTranslator();
+    await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    expect(translator.translate).toHaveBeenCalled();
+  });
+
+  it("should translate strings starting with h that are not URLs", async () => {
+    // Starts with 'h' but not http(s)://
+    const notUrl = "hello world, this is a long Japanese text about something";
+    const jsonText = JSON.stringify({ greeting: notUrl });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const translator = createMockTranslator();
+    await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    expect(translator.translate).toHaveBeenCalled();
+  });
+
+  it("should pass through resource content blocks unchanged", async () => {
+    const result = {
+      content: [
+        { type: "resource" as const, resource: { uri: "file:///test.txt", text: "content" } },
+        { type: "text" as const, text: "翻訳テスト" },
+      ],
+    };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0]).toEqual({
+      type: "resource",
+      resource: { uri: "file:///test.txt", text: "content" },
+    });
+    expect(transformed.content[1].text).toBe("[EN] 翻訳テスト");
+  });
+
   it("should treat all-whitespace text as a non-code-block (plain text path)", async () => {
     // All-whitespace string exercises the firstNonWsIndex fallthrough.
     // It's also (debatably) "target language", so should pass through as skipped.

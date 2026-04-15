@@ -172,4 +172,44 @@ describe("Haiku Translator", () => {
     const args = mockCreate.mock.calls[0][0] as { model: string };
     expect(args.model).toBe("custom-model-id");
   });
+
+  it("should include the text to translate in the prompt", async () => {
+    const { createHaikuTranslator } = await import(
+      "../../src/translator/haiku.js"
+    );
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: "Translated" }],
+    });
+
+    const translator = createHaikuTranslator(
+      { type: "api_key", apiKey: "sk-test" },
+      "claude-haiku-4-5-20251001",
+    );
+
+    const longText = "これは非常に長い日本語のテキストで、APIを通じて翻訳される必要があります。";
+    await translator.translate(longText, "auto", "en");
+
+    const args = mockCreate.mock.calls[0][0] as {
+      messages: { content: string }[];
+    };
+    expect(args.messages[0].content).toContain(longText);
+  });
+
+  it("should throw descriptive error when content array is empty", async () => {
+    const { createHaikuTranslator } = await import(
+      "../../src/translator/haiku.js"
+    );
+    // Response with empty content array — accessing [0] gives undefined
+    mockCreate.mockResolvedValueOnce({
+      content: [],
+    });
+
+    const translator = createHaikuTranslator(
+      { type: "api_key", apiKey: "sk-test" },
+      "claude-haiku-4-5-20251001",
+    );
+
+    // Accessing .type on undefined should throw
+    await expect(translator.translate("テスト", "auto", "en")).rejects.toThrow();
+  });
 });

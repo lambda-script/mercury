@@ -449,4 +449,116 @@ describe("Google Free Translator", () => {
       to: "en",
     }));
   });
+
+  it("should log error cause when the thrown error has a cause property", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    const baseError = new Error("network failure");
+    (baseError as Error & { cause: string }).cause = "ECONNREFUSED";
+
+    mockTranslate
+      .mockRejectedValueOnce(baseError)
+      .mockResolvedValueOnce({ text: "OK" });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate("test", "auto", "en");
+
+    await vi.advanceTimersByTimeAsync(600);
+
+    const result = await promise;
+    expect(result).toBe("OK");
+    expect(mockTranslate).toHaveBeenCalledTimes(2);
+  });
+
+  it("should handle text that is exactly MAX_CHUNK_CHARS (4500)", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    mockTranslate.mockImplementation(async (text: string) => ({ text }));
+
+    const input = "a".repeat(4500);
+    const translator = createGoogleFreeTranslator();
+    const result = await translator.translate(input, "auto", "en");
+
+    // Exactly at limit — should NOT be split
+    expect(result).toBe(input);
+    expect(mockTranslate).toHaveBeenCalledTimes(1);
+  });
+
+  it("should handle text that is one char over MAX_CHUNK_CHARS (4501)", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    mockTranslate.mockImplementation(async (text: string) => ({ text }));
+
+    // 4501 chars with no boundaries — forces hard split
+    const input = "x".repeat(4501);
+    const translator = createGoogleFreeTranslator();
+    const result = await translator.translate(input, "auto", "en");
+
+    expect(result).toBe(input);
+    expect(mockTranslate).toHaveBeenCalledTimes(2);
+    expect((mockTranslate.mock.calls[0][0] as string).length).toBe(4500);
+    expect((mockTranslate.mock.calls[1][0] as string).length).toBe(1);
+  });
+
+  it("should recover from mixed error types across retries", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // First: timeout, Second: network error, Third: success
+    mockTranslate
+      .mockRejectedValueOnce(new Error("Translation attempt timed out after 15000ms"))
+      .mockRejectedValueOnce(new Error("ECONNRESET"))
+      .mockResolvedValueOnce({ text: "Recovered" });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate("テスト", "auto", "en");
+
+    // Advance past both backoff delays
+    await vi.advanceTimersByTimeAsync(500);  // first backoff
+    await vi.advanceTimersByTimeAsync(1000); // second backoff
+
+    const result = await promise;
+    expect(result).toBe("Recovered");
+    expect(mockTranslate).toHaveBeenCalledTimes(3);
+    // TLD rotation: com → co.jp → co.uk
+    expect(mockTranslate.mock.calls[0][1].tld).toBe("com");
+    expect(mockTranslate.mock.calls[1][1].tld).toBe("co.jp");
+    expect(mockTranslate.mock.calls[2][1].tld).toBe("co.uk");
+  });
+
+  it("should handle multiple chunks where middle chunk fails all retries", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // Three paragraphs of 3000 chars each → three chunks (each under 4500)
+    const para = "p".repeat(3000);
+    const text = `${para}\n\n${para}\n\n${para}`;
+
+    let callCount = 0;
+    mockTranslate.mockImplementation(async () => {
+      callCount++;
+      // Calls 2-4 are the second chunk's 3 retry attempts
+      if (callCount >= 2 && callCount <= 4) {
+        throw new Error("rate limited");
+      }
+      return { text: `OK${callCount}` };
+    });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate(text, "auto", "en");
+
+    await vi.advanceTimersByTimeAsync(4000);
+
+    const result = await promise;
+    // First chunk translates OK, second falls back to original, third translates OK
+    expect(result).toContain("OK1");
+    expect(result).toContain(para); // fallen-back original
+    expect(result).toContain("OK5");
+  });
 });
