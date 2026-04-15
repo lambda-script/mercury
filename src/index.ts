@@ -56,6 +56,7 @@ Environment variables:
   MERCURY_MIN_DETECT_LENGTH  Minimum text length for detection: 20 (default)
   MERCURY_LOG_LEVEL          Log level: debug, info, warn, error (default: info)
   MERCURY_LOG_FILE           Log to file instead of stderr
+  MERCURY_HAIKU_MODEL        Model ID for haiku backend (default: claude-haiku-4-5-20251001)
 
   # Required only for 'haiku' backend:
   ANTHROPIC_API_KEY          API key for Haiku translation

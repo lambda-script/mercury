@@ -18,7 +18,7 @@ export function toIso3(lang: string): string {
   return ISO1_TO_ISO3[lang] ?? lang;
 }
 
-// ISO 639-3 codes used by franc → human-readable language names
+/** ISO 639-3 codes (as returned by franc) mapped to human-readable language names. Used for log output. */
 export const LANG_NAMES: Readonly<Record<string, string>> = {
   jpn: "Japanese",
   kor: "Korean",
