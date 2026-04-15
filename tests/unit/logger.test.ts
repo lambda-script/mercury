@@ -101,6 +101,26 @@ describe("logger", () => {
     unlinkSync(logFile);
   });
 
+  it("should warn and fall back to info when log level is invalid", async () => {
+    process.env.MERCURY_LOG_LEVEL = "verbose";
+    const { logger } = await import("../../src/utils/logger.js");
+
+    // Should have warned about the invalid level during module init
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Invalid MERCURY_LOG_LEVEL 'verbose'"),
+    );
+
+    writeSpy.mockClear();
+
+    // Should behave as info level: info appears, debug does not
+    logger.info("should appear");
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("[INFO] should appear"));
+
+    writeSpy.mockClear();
+    logger.debug("should not appear");
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
   it("should fall back to stderr when file write fails", async () => {
     // Use an invalid path that will fail
     process.env.MERCURY_LOG_FILE = "/invalid/path/that/does/not/exist/test.log";

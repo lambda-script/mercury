@@ -9,7 +9,20 @@ const LOG_LEVELS: Record<LogLevel, number> = {
   error: 3,
 };
 
-const currentLevel: LogLevel = (process.env.MERCURY_LOG_LEVEL as LogLevel) ?? "info";
+const VALID_LOG_LEVELS = new Set<string>(Object.keys(LOG_LEVELS));
+const rawLevel = process.env.MERCURY_LOG_LEVEL ?? "info";
+
+const currentLevel: LogLevel = VALID_LOG_LEVELS.has(rawLevel)
+  ? (rawLevel as LogLevel)
+  : (() => {
+      // Write directly to stderr — the logger itself depends on currentLevel,
+      // so it cannot be used here.
+      process.stderr.write(
+        `[WARN] Invalid MERCURY_LOG_LEVEL '${rawLevel}'. ` +
+        `Valid values: debug, info, warn, error. Defaulting to 'info'.\n`,
+      );
+      return "info" as LogLevel;
+    })();
 const logFile: string | undefined = process.env.MERCURY_LOG_FILE || undefined;
 
 function shouldLog(level: LogLevel): boolean {

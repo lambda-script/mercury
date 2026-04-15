@@ -335,7 +335,20 @@ export function createStdioProxy(
   /** Setup process lifecycle handlers: error, exit, signals. */
   function setupProcessLifecycle(child: ChildProcess, reject: (err: Error) => void): void {
     child.on("error", (err) => {
-      logger.error(`Child process error: ${err.message}`);
+      const errno = (err as NodeJS.ErrnoException).code;
+      if (errno === "ENOENT") {
+        logger.error(
+          `Command not found: '${command}'. ` +
+          `Verify the command is installed and on your PATH, or use an absolute path in .mcp.json.`,
+        );
+      } else if (errno === "EACCES") {
+        logger.error(
+          `Permission denied: '${command}'. ` +
+          `Check that the file is executable (chmod +x).`,
+        );
+      } else {
+        logger.error(`Child process error: ${err.message}`);
+      }
       reject(err);
     });
 
