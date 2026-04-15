@@ -384,6 +384,7 @@ export function createStdioProxy(
 
     process.once("SIGINT", () => shutdown("SIGINT"));
     process.once("SIGTERM", () => shutdown("SIGTERM"));
+    process.once("SIGHUP", () => shutdown("SIGHUP"));
   }
 
   return {
@@ -428,6 +429,14 @@ export function createStdioProxy(
         });
         child.stderr.on("error", (err) => {
           logger.warn(`Child stderr error: ${err.message}`);
+        });
+
+        // Guard our own stdout against async EPIPE. When the MCP client
+        // disconnects, writes land on a broken pipe.  process.stdout.write()
+        // does NOT throw synchronously — it emits an async 'error' event.
+        // Without this handler the event is unhandled and crashes the process.
+        process.stdout.on("error", (err) => {
+          logger.warn(`stdout error: ${err.message}`);
         });
 
         setupClientStream(child);

@@ -1,5 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+// Mock logger so we can assert on capacity-eviction warnings
+vi.mock("../../src/utils/logger.js", () => ({
+  logger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
 import { createRequestTracker } from "../../src/proxy/tracker.js";
+import { logger } from "../../src/utils/logger.js";
 
 describe("RequestTracker", () => {
   it("should track and retrieve a request method by ID", () => {
@@ -110,6 +122,27 @@ describe("RequestTracker", () => {
       expect(tracker.take(0)).toBeUndefined();
       expect(tracker.take(1000)).toBe("tools/list");
       expect(tracker.take(1)).toBe("tools/call");
+    });
+
+    it("should log a warning when capacity eviction occurs", () => {
+      vi.mocked(logger.warn).mockClear();
+      const tracker = createRequestTracker();
+
+      for (let i = 0; i < 1000; i++) {
+        tracker.track(i, "tools/call");
+      }
+      // No warning yet — capacity not exceeded
+      expect(logger.warn).not.toHaveBeenCalled();
+
+      // This triggers eviction of id=0
+      tracker.track(1000, "tools/list");
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("capacity"),
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("id=0"),
+      );
     });
 
     it("should evict expired entries before checking capacity", () => {

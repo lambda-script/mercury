@@ -54,12 +54,13 @@ describe("stdio proxy", () => {
     vi.clearAllMocks();
     stdoutWrites = [];
 
-    // Each createStdioProxy() call registers SIGINT/SIGTERM handlers via
-    // process.once. They are not removed unless the signal fires, so they
+    // Each createStdioProxy() call registers SIGINT/SIGTERM/SIGHUP handlers
+    // via process.once. They are not removed unless the signal fires, so they
     // accumulate across tests and trip the MaxListeners warning. Reset between
     // tests so we start clean.
     process.removeAllListeners("SIGINT");
     process.removeAllListeners("SIGTERM");
+    process.removeAllListeners("SIGHUP");
 
     // Fresh child for each test
     currentChild = createMockChild();
@@ -84,6 +85,9 @@ describe("stdio proxy", () => {
 
   afterEach(() => {
     process.stdout.write = realStdoutWrite;
+    // The proxy registers a process.stdout 'error' handler — remove it
+    // between tests so handlers don't accumulate.
+    process.stdout.removeAllListeners("error");
     // child.stderr.pipe(process.stderr) leaks listeners on the global stderr
     // socket between tests; unpipe before destroying.
     currentChild.mockStderr.unpipe(process.stderr);
@@ -285,6 +289,14 @@ describe("stdio proxy", () => {
     expect(currentChild.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
+  it("should forward SIGHUP to child on terminal disconnect", async () => {
+    await createProxy();
+
+    process.emit("SIGHUP" as unknown as "disconnect");
+
+    expect(currentChild.kill).toHaveBeenCalledWith("SIGHUP");
+  });
+
   it("should not crash when child stdin emits an error", async () => {
     await createProxy();
 
@@ -301,6 +313,16 @@ describe("stdio proxy", () => {
 
     expect(() => {
       currentChild.mockStdout.emit("error", new Error("EPIPE"));
+    }).not.toThrow();
+  });
+
+  it("should not crash when process.stdout emits an EPIPE error", async () => {
+    await createProxy();
+
+    // Simulate async EPIPE on process.stdout (MCP client disconnected).
+    // Without the error handler, this would be an unhandled 'error' event.
+    expect(() => {
+      process.stdout.emit("error", new Error("write EPIPE"));
     }).not.toThrow();
   });
 
