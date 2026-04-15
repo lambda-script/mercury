@@ -80,16 +80,12 @@ export function createFrancDetector(minLength: number): Detector {
     isTargetLang(text: string, targetLang: string): boolean {
       const target3 = toIso3(targetLang);
 
-      // Short text: check script
-      if (text.length < minLength) {
-        const scriptLang = detectByScript(text);
-        // No non-Latin script detected → assume target lang (skip translation)
-        if (!scriptLang) return true;
-        return scriptLang === target3;
-      }
-
+      // Route all text through detect() so the 1-entry cache is populated.
+      // This avoids a redundant detectByScript() call when translateAndTrack()
+      // subsequently calls detect() on the same text.
       const result = this.detect(text);
-      if (result.lang === UNDETERMINED) {
+      if (result.confidence === 0) {
+        // No language detected (undetermined / no non-Latin script) → assume target
         return true;
       }
       return result.lang === target3;
