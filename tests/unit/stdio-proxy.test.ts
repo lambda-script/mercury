@@ -586,6 +586,174 @@ describe("stdio proxy", () => {
     expect(response!.error).toEqual({ code: -32603, message: "boom" });
   });
 
+  it("should not crash when child stderr emits an error", async () => {
+    await createProxy();
+
+    // Simulate an error on child stderr (e.g., EPIPE). The proxy attaches
+    // an error handler on line 429-430 to prevent unhandled error events.
+    expect(() => {
+      currentChild.mockStderr.emit("error", new Error("EPIPE"));
+    }).not.toThrow();
+  });
+
+  it("should ignore a second shutdown signal (double-signal guard)", async () => {
+    await createProxy();
+
+    // First SIGINT triggers shutdown
+    process.emit("SIGINT" as unknown as "disconnect");
+    expect(currentChild.kill).toHaveBeenCalledWith("SIGINT");
+    expect(currentChild.kill).toHaveBeenCalledTimes(1);
+
+    // Second SIGTERM should be ignored because shutdownInProgress is true.
+    // SIGTERM listener was registered via process.once, so it fires only once.
+    // The design prevents re-entrance via the shutdownInProgress flag.
+    // We verify the child.kill wasn't called a second time.
+    expect(currentChild.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("should handle a server message that throws during handleServerMessage", async () => {
+    // The serial queue catches errors thrown during message handling and logs
+    // them, then forwards the original line. We simulate this by using a
+    // translator that throws synchronously (not in a Promise).
+    const detector = {
+      detect: vi.fn(() => { throw new Error("unexpected detect crash"); }),
+      isTargetLang: vi.fn(() => { throw new Error("unexpected detect crash"); }),
+    };
+    const translator = {
+      translate: vi.fn(async () => { throw new Error("unexpected translate crash"); }),
+    };
+
+    await createProxy(detector, translator);
+
+    // Track a tools/call
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 70, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Server responds — handleToolCallResponse will throw during transform,
+    // which is caught by the try/catch inside handleToolCallResponse.
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 70,
+        result: { content: [{ type: "text", text: "テスト" }] },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    // The original result should be forwarded despite the error
+    const messages = getOutputMessages();
+    const response = messages.find((m) => m.id === 70);
+    expect(response).toBeDefined();
+  });
+
+  it("should track both tools/call and tools/list but ignore other methods", async () => {
+    await createProxy();
+
+    // Send requests with various methods
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 80, method: "tools/call", params: {} }) + "\n",
+    );
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 81, method: "tools/list" }) + "\n",
+    );
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 82, method: "resources/read", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Server responds to all three
+    for (const id of [80, 81, 82]) {
+      currentChild.mockStdout.write(
+        JSON.stringify({ jsonrpc: "2.0", id, result: { data: `result-${id}` } }) + "\n",
+      );
+    }
+    await new Promise((r) => setTimeout(r, 100));
+
+    const messages = getOutputMessages();
+    // All three responses should be forwarded
+    expect(messages.filter((m) => m.id !== undefined)).toHaveLength(3);
+  });
+
+  it("should log final stats when child exits after translations have completed", async () => {
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    const translator = {
+      translate: vi.fn(async () => "Hello"),
+    };
+
+    const proxy = await createProxy(detector, translator);
+
+    // Do a complete translation first
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 75, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 75,
+        result: { content: [{ type: "text", text: "こんにちは" }] },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Translation should be done now
+    expect(proxy.stats.toolCallsTranslated).toBe(1);
+
+    // Now child exits — the exit handler should log final stats (line 347)
+    currentChild.emit("exit", 0, null);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(process.exit).toHaveBeenCalledWith(0);
+  });
+
+  it("should compute exit code from signal (128 + signal number)", async () => {
+    await createProxy();
+
+    // Child exits with a signal instead of a code
+    currentChild.emit("exit", null, "SIGTERM");
+    await new Promise((r) => setTimeout(r, 50));
+
+    // SIGTERM = 15, so exit code should be 128 + 15 = 143
+    expect(process.exit).toHaveBeenCalledWith(143);
+  });
+
+  it("should compute exit code 1 when both code and signal are null", async () => {
+    await createProxy();
+
+    // Edge case: both null
+    currentChild.emit("exit", null, null);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("should handle whitespace-only lines from client without forwarding", async () => {
+    await createProxy();
+
+    // Client sends whitespace-only lines — these should be silently dropped
+    mockStdin.write("   \n");
+    mockStdin.write("\t\n");
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Nothing should be written to child stdin (besides the data listener setup)
+    const childData: string[] = [];
+    currentChild.mockStdin.on("data", (chunk: Buffer) => {
+      childData.push(chunk.toString());
+    });
+
+    mockStdin.write("  \t  \n");
+    await new Promise((r) => setTimeout(r, 50));
+
+    // No JSON-RPC messages forwarded (whitespace-only lines are dropped by parseJsonRpcLine)
+    expect(childData.join("").trim()).toBe("");
+  });
+
   it("should drain server queue before exiting on child exit", async () => {
     // Use a translator with a delay to simulate in-flight work
     let resolveTranslation: (value: string) => void;

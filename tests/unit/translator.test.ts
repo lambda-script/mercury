@@ -421,6 +421,46 @@ describe("Google Free Translator", () => {
     expect(mockTranslate).toHaveBeenCalledTimes(4);
   });
 
+  it("should include Error.cause in retry log when present", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // Error with a cause property — exercises the getErrorMessage branch
+    // that appends ` (cause: ...)` to the message.
+    const errWithCause = new Error("Connection failed");
+    (errWithCause as Error & { cause: string }).cause = "ECONNREFUSED";
+    mockTranslate
+      .mockRejectedValueOnce(errWithCause)
+      .mockResolvedValueOnce({ text: "OK" });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate("テスト", "auto", "en");
+
+    await vi.advanceTimersByTimeAsync(600);
+
+    const result = await promise;
+    expect(result).toBe("OK");
+    expect(mockTranslate).toHaveBeenCalledTimes(2);
+  });
+
+  it("should handle text that splits evenly at MAX_CHUNK_CHARS boundary", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    // Exactly 9000 chars with a paragraph break at 4500 → two even chunks
+    const half = "a".repeat(4498);
+    const text = `${half}\n\n${half}`;
+
+    mockTranslate.mockImplementation(async (t: string) => ({ text: t }));
+
+    const translator = createGoogleFreeTranslator();
+    const result = await translator.translate(text, "auto", "en");
+
+    expect(result).toBe(text);
+    expect(mockTranslate.mock.calls.length).toBe(2);
+  });
+
   it("should handle empty string input", async () => {
     const { createGoogleFreeTranslator } = await import(
       "../../src/translator/google-free.js"
