@@ -60,6 +60,7 @@ describe("stdio proxy", () => {
     // tests so we start clean.
     process.removeAllListeners("SIGINT");
     process.removeAllListeners("SIGTERM");
+    process.removeAllListeners("SIGHUP");
 
     // Fresh child for each test
     currentChild = createMockChild();
@@ -84,6 +85,8 @@ describe("stdio proxy", () => {
 
   afterEach(() => {
     process.stdout.write = realStdoutWrite;
+    // Remove stdout error listeners added by the proxy to prevent accumulation.
+    process.stdout.removeAllListeners("error");
     // child.stderr.pipe(process.stderr) leaks listeners on the global stderr
     // socket between tests; unpipe before destroying.
     currentChild.mockStderr.unpipe(process.stderr);
@@ -283,6 +286,25 @@ describe("stdio proxy", () => {
     process.emit("SIGTERM" as unknown as "disconnect");
 
     expect(currentChild.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("should forward SIGHUP to child on shutdown", async () => {
+    await createProxy();
+
+    process.emit("SIGHUP" as unknown as "disconnect");
+
+    expect(currentChild.kill).toHaveBeenCalledWith("SIGHUP");
+  });
+
+  it("should not crash when process.stdout emits an error", async () => {
+    await createProxy();
+
+    // Simulate EPIPE on stdout (client disconnects).
+    // Without the error listener added by the proxy, this would be an
+    // unhandled 'error' event and terminate the process.
+    expect(() => {
+      process.stdout.emit("error", new Error("EPIPE"));
+    }).not.toThrow();
   });
 
   it("should not crash when child stdin emits an error", async () => {
