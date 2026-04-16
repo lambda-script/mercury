@@ -307,7 +307,11 @@ export function createStdioProxy(
             `Error handling server message: ${err instanceof Error ? err.message : String(err)}`,
           );
           // Forward original on error so the client still sees something.
-          process.stdout.write(line + "\n");
+          try {
+            process.stdout.write(line + "\n");
+          } catch {
+            // stdout broken (EPIPE) — nothing more we can do.
+          }
         }
       });
     });
@@ -384,6 +388,7 @@ export function createStdioProxy(
 
     process.once("SIGINT", () => shutdown("SIGINT"));
     process.once("SIGTERM", () => shutdown("SIGTERM"));
+    process.once("SIGHUP", () => shutdown("SIGHUP"));
   }
 
   return {
@@ -428,6 +433,14 @@ export function createStdioProxy(
         });
         child.stderr.on("error", (err) => {
           logger.warn(`Child stderr error: ${err.message}`);
+        });
+
+        // Catch async EPIPE errors on process.stdout. When the client
+        // (e.g. Claude Code) disconnects, writes to stdout emit an async
+        // 'error' event. Without this listener the event is unhandled and
+        // crashes the proxy.
+        process.stdout.on("error", (err) => {
+          logger.warn(`stdout error: ${err.message}`);
         });
 
         setupClientStream(child);
