@@ -529,7 +529,7 @@ describe("stdio proxy", () => {
     await expect(proxy.start()).rejects.toThrow(/stdio pipes/);
   });
 
-  it("should reject start() on child process error event", async () => {
+  it("should handle child process error without crashing", async () => {
     const { createStdioProxy } = await import("../../src/proxy/stdio.js");
 
     const proxy = createStdioProxy(
@@ -540,11 +540,9 @@ describe("stdio proxy", () => {
       "en",
     );
 
-    const startPromise = proxy.start();
-    await startPromise; // resolves immediately
+    await proxy.start();
 
-    // start() already resolved — but the error reject is still wired in.
-    // Verify the handler logs the error without throwing.
+    // The error handler logs the error but does not throw or crash the proxy.
     expect(() => currentChild.emit("error", new Error("child boom"))).not.toThrow();
   });
 

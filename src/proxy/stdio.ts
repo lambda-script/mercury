@@ -5,7 +5,9 @@ import type { Detector } from "../detector/index.js";
 import type { Translator } from "../translator/index.js";
 import { createRequestTracker, type RequestTracker } from "./tracker.js";
 import { transformToolResult, formatTransformStats } from "../transform/tool-result.js";
+import { formatError } from "../utils/error.js";
 import { logger } from "../utils/logger.js";
+import { firstNonWsIndex } from "../utils/string.js";
 
 /** A JSON-RPC 2.0 message (request, response, or notification). */
 export interface JsonRpcMessage {
@@ -26,15 +28,7 @@ function isValidJsonRpcMessage(value: unknown): value is JsonRpcMessage {
  * Returns null if invalid or not a valid JSON-RPC message.
  */
 function parseJsonRpcLine(line: string): JsonRpcMessage | null {
-  // Skip empty / whitespace-only lines without allocating a trimmed copy.
-  let i = 0;
-  const len = line.length;
-  while (i < len) {
-    const ch = line.charCodeAt(i);
-    if (ch !== 0x20 && ch !== 0x09 && ch !== 0x0a && ch !== 0x0d) break;
-    i++;
-  }
-  if (i === len) return null;
+  if (firstNonWsIndex(line) === line.length) return null;
 
   try {
     const parsed = JSON.parse(line) as unknown;
@@ -112,7 +106,7 @@ function createSerialQueue(label: string): SerialQueue {
     enqueue(task) {
       tail = tail.then(task).catch((err) => {
         logger.error(
-          `[${label}] task error: ${err instanceof Error ? err.message : String(err)}`,
+          `[${label}] task error: ${formatError(err)}`,
         );
       });
     },
@@ -176,7 +170,7 @@ export function createStdioProxy(
     } catch (err) {
       // EPIPE if client closed stdout — log and continue rather than crash.
       logger.warn(
-        `Failed to write to stdout: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to write to stdout: ${formatError(err)}`,
       );
     }
   }
@@ -212,8 +206,7 @@ export function createStdioProxy(
 
       writeMessage({ ...msg, result: content });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logger.error(`Transform error: ${message}`);
+      logger.error(`Transform error: ${formatError(err)}`);
       writeMessage(msg); // Forward original on error
     }
   }
@@ -261,7 +254,7 @@ export function createStdioProxy(
       childStdin.write(JSON.stringify(msg) + "\n");
     } catch (err) {
       logger.warn(
-        `Failed to write to child stdin: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to write to child stdin: ${formatError(err)}`,
       );
     }
   }
@@ -304,7 +297,7 @@ export function createStdioProxy(
           await handleServerMessage(msg);
         } catch (err) {
           logger.error(
-            `Error handling server message: ${err instanceof Error ? err.message : String(err)}`,
+            `Error handling server message: ${formatError(err)}`,
           );
           // Forward original on error so the client still sees something.
           process.stdout.write(line + "\n");
@@ -333,10 +326,9 @@ export function createStdioProxy(
   }
 
   /** Setup process lifecycle handlers: error, exit, signals. */
-  function setupProcessLifecycle(child: ChildProcess, reject: (err: Error) => void): void {
+  function setupProcessLifecycle(child: ChildProcess): void {
     child.on("error", (err) => {
       logger.error(`Child process error: ${err.message}`);
-      reject(err);
     });
 
     child.on("exit", (code, signal) => {
@@ -389,55 +381,46 @@ export function createStdioProxy(
   return {
     stats,
 
-    start(): Promise<void> {
-      return new Promise((resolve, reject) => {
-        let child: ChildProcess;
+    async start(): Promise<void> {
+      let child: ChildProcess;
 
-        try {
-          child = spawn(command, args as string[], {
-            stdio: ["pipe", "pipe", "pipe"],
-            env: process.env,
-          });
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)));
-          return;
-        }
+      try {
+        child = spawn(command, args as string[], {
+          stdio: ["pipe", "pipe", "pipe"],
+          env: process.env,
+        });
+      } catch (err) {
+        throw err instanceof Error ? err : new Error(String(err));
+      }
 
-        if (!child.stdin || !child.stdout || !child.stderr) {
-          reject(
-            new Error(
-              `Failed to open stdio pipes for child process '${command}'. ` +
-                `Verify the command exists and is executable.`,
-            ),
-          );
-          return;
-        }
-
-        logger.info(
-          `Started child process: ${command} ${args.join(" ")} (pid: ${child.pid})`,
+      if (!child.stdin || !child.stdout || !child.stderr) {
+        throw new Error(
+          `Failed to open stdio pipes for child process '${command}'. ` +
+            `Verify the command exists and is executable.`,
         );
+      }
 
-        // Attach error listeners to all child stdio streams. Without these,
-        // an EPIPE (e.g. child crashes mid-write) becomes an unhandled
-        // 'error' event and terminates the proxy.
-        child.stdin.on("error", (err) => {
-          logger.warn(`Child stdin error: ${err.message}`);
-        });
-        child.stdout.on("error", (err) => {
-          logger.warn(`Child stdout error: ${err.message}`);
-        });
-        child.stderr.on("error", (err) => {
-          logger.warn(`Child stderr error: ${err.message}`);
-        });
+      logger.info(
+        `Started child process: ${command} ${args.join(" ")} (pid: ${child.pid})`,
+      );
 
-        setupClientStream(child);
-        setupServerStream(child);
-        child.stderr.pipe(process.stderr);
-        setupProcessLifecycle(child, reject);
-
-        // Resolve immediately — the proxy is running.
-        resolve();
+      // Attach error listeners to all child stdio streams. Without these,
+      // an EPIPE (e.g. child crashes mid-write) becomes an unhandled
+      // 'error' event and terminates the proxy.
+      child.stdin.on("error", (err) => {
+        logger.warn(`Child stdin error: ${err.message}`);
       });
+      child.stdout.on("error", (err) => {
+        logger.warn(`Child stdout error: ${err.message}`);
+      });
+      child.stderr.on("error", (err) => {
+        logger.warn(`Child stderr error: ${err.message}`);
+      });
+
+      setupClientStream(child);
+      setupServerStream(child);
+      child.stderr.pipe(process.stderr);
+      setupProcessLifecycle(child);
     },
   };
 }
