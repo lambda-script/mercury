@@ -352,22 +352,22 @@ export async function transformToolResult(
     return { content: result, stats };
   }
 
-  const translatedContent: McpContent[] = [];
-  for (const block of toolResult.content) {
-    if (block.type === "text") {
-      const translated = await translateText(
-        block.text,
-        detector,
-        translator,
-        targetLang,
-        stats,
-      );
-      translatedContent.push({ ...block, text: translated });
-    } else {
+  const translatedContent = await Promise.all(
+    toolResult.content.map(async (block): Promise<McpContent> => {
+      if (block.type === "text") {
+        const translated = await translateText(
+          block.text,
+          detector,
+          translator,
+          targetLang,
+          stats,
+        );
+        return { ...block, text: translated };
+      }
       // image, resource, etc — pass through
-      translatedContent.push(block);
-    }
-  }
+      return block;
+    }),
+  );
 
   return {
     content: { ...toolResult, content: translatedContent },
