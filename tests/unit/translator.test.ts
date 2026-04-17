@@ -435,6 +435,66 @@ describe("Google Free Translator", () => {
     expect(mockTranslate).toHaveBeenCalledTimes(1);
   });
 
+  it("should not split text of exactly MAX_CHUNK_CHARS (4500)", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    // Boundary case: splitIntoChunks early-returns when text.length <= MAX_CHUNK_CHARS.
+    const exact = "a".repeat(4500);
+    mockTranslate.mockResolvedValueOnce({ text: "T" });
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate(exact, "auto", "en");
+
+    expect(mockTranslate).toHaveBeenCalledTimes(1);
+    expect((mockTranslate.mock.calls[0][0] as string).length).toBe(4500);
+  });
+
+  it("should split text of MAX_CHUNK_CHARS + 1 into two chunks", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    // One char past the boundary → two chunks (4500 + 1 via hard split).
+    const overBy1 = "a".repeat(4501);
+    mockTranslate.mockImplementation(async (chunk: string) => ({
+      text: `T(${chunk.length})`,
+    }));
+
+    const translator = createGoogleFreeTranslator();
+    await translator.translate(overBy1, "auto", "en");
+
+    expect(mockTranslate).toHaveBeenCalledTimes(2);
+    expect((mockTranslate.mock.calls[0][0] as string).length).toBe(4500);
+    expect((mockTranslate.mock.calls[1][0] as string).length).toBe(1);
+  });
+
+  it("should include the error cause in the retry warning", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    const { logger } = await import("../../src/utils/logger.js");
+
+    // Error with a `cause` property — node's fetch wraps low-level failures
+    // this way (e.g. ECONNRESET / ETIMEDOUT). getErrorMessage formats both.
+    const withCause = new Error("fetch failed");
+    (withCause as Error & { cause?: unknown }).cause = "ECONNRESET";
+    mockTranslate
+      .mockRejectedValueOnce(withCause)
+      .mockResolvedValueOnce({ text: "OK" });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate("テスト", "auto", "en");
+    await vi.advanceTimersByTimeAsync(600);
+    await promise;
+
+    const warn = vi.mocked(logger.warn);
+    const warning = warn.mock.calls.find((call) =>
+      typeof call[0] === "string" && call[0].includes("fetch failed"),
+    );
+    expect(warning).toBeDefined();
+    expect(warning![0]).toContain("ECONNRESET");
+  });
+
   it("should pass an explicit source language through unchanged", async () => {
     const { createGoogleFreeTranslator } = await import(
       "../../src/translator/google-free.js"
