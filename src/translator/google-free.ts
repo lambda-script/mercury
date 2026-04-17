@@ -80,6 +80,10 @@ function safeHardSplitIndex(text: string, idx: number): number {
  * MAX_CHUNK_CHARS. Returns chunks paired with the separator that originally
  * followed them in the source, so the translated output can be reassembled
  * without losing the original whitespace structure.
+ *
+ * Uses cursor offsets into the original `text` instead of progressively slicing
+ * a `remaining` buffer, so total allocation is O(chunks) chunk strings rather
+ * than O(chunks) shrinking copies of the tail.
  */
 function splitIntoChunks(text: string): Chunk[] {
   if (text.length <= MAX_CHUNK_CHARS) {
@@ -87,23 +91,25 @@ function splitIntoChunks(text: string): Chunk[] {
   }
 
   const chunks: Chunk[] = [];
-  let remaining = text;
+  const len = text.length;
+  let pos = 0;
 
-  while (remaining.length > MAX_CHUNK_CHARS) {
+  while (len - pos > MAX_CHUNK_CHARS) {
+    const windowEnd = pos + MAX_CHUNK_CHARS;
     let splitIdx = -1;
     let separator = "";
 
-    // Paragraph boundary (\n\n)
-    const paraIdx = remaining.lastIndexOf("\n\n", MAX_CHUNK_CHARS);
-    if (paraIdx > 0) {
+    // Paragraph boundary (\n\n) — must be strictly after `pos` to make progress.
+    const paraIdx = text.lastIndexOf("\n\n", windowEnd);
+    if (paraIdx > pos) {
       splitIdx = paraIdx;
       separator = "\n\n";
     }
 
     // Single newline
     if (splitIdx < 0) {
-      const nlIdx = remaining.lastIndexOf("\n", MAX_CHUNK_CHARS);
-      if (nlIdx > 0) {
+      const nlIdx = text.lastIndexOf("\n", windowEnd);
+      if (nlIdx > pos) {
         splitIdx = nlIdx;
         separator = "\n";
       }
@@ -111,8 +117,8 @@ function splitIntoChunks(text: string): Chunk[] {
 
     // Sentence boundary (period followed by space)
     if (splitIdx < 0) {
-      const sentIdx = remaining.lastIndexOf(". ", MAX_CHUNK_CHARS);
-      if (sentIdx > 0) {
+      const sentIdx = text.lastIndexOf(". ", windowEnd);
+      if (sentIdx > pos) {
         splitIdx = sentIdx + 1; // keep the period in this chunk
         separator = " ";
       }
@@ -120,16 +126,16 @@ function splitIntoChunks(text: string): Chunk[] {
 
     // Hard split as last resort, avoiding surrogate pairs
     if (splitIdx < 0) {
-      splitIdx = safeHardSplitIndex(remaining, MAX_CHUNK_CHARS);
+      splitIdx = safeHardSplitIndex(text, windowEnd);
       separator = "";
     }
 
-    chunks.push({ text: remaining.slice(0, splitIdx), separator });
-    remaining = remaining.slice(splitIdx + separator.length);
+    chunks.push({ text: text.slice(pos, splitIdx), separator });
+    pos = splitIdx + separator.length;
   }
 
-  if (remaining.length > 0) {
-    chunks.push({ text: remaining, separator: "" });
+  if (pos < len) {
+    chunks.push({ text: text.slice(pos), separator: "" });
   }
 
   return chunks;

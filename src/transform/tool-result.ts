@@ -167,6 +167,11 @@ function shouldTranslateJsonString(
  * Sibling values inside arrays *and* objects are translated concurrently
  * via Promise.all so a single deeply-structured payload is not bottlenecked
  * on serial round-trips.
+ *
+ * If no descendant produced a translation (tracked via the stats counter),
+ * the original `value` is returned without rebuilding the array/object spine —
+ * this avoids a full intermediate clone of typed JSON whose strings are
+ * already in the target language.
  */
 async function translateJsonStrings(
   value: unknown,
@@ -188,23 +193,28 @@ async function translateJsonStrings(
   }
 
   if (Array.isArray(value)) {
-    return Promise.all(
+    const blocksBefore = stats.blocksTranslated;
+    const translated = await Promise.all(
       value.map((item) =>
         translateJsonStrings(item, detector, translator, targetLang, stats, depth + 1),
       ),
     );
+    return stats.blocksTranslated === blocksBefore ? value : translated;
   }
 
   if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value);
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj);
+    const blocksBefore = stats.blocksTranslated;
     const translatedValues = await Promise.all(
-      entries.map(([, val]) =>
-        translateJsonStrings(val, detector, translator, targetLang, stats, depth + 1),
+      keys.map((k) =>
+        translateJsonStrings(obj[k], detector, translator, targetLang, stats, depth + 1),
       ),
     );
+    if (stats.blocksTranslated === blocksBefore) return value;
     const result: Record<string, unknown> = {};
-    for (let i = 0; i < entries.length; i++) {
-      result[entries[i][0]] = translatedValues[i];
+    for (let i = 0; i < keys.length; i++) {
+      result[keys[i]] = translatedValues[i];
     }
     return result;
   }
