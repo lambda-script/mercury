@@ -586,6 +586,160 @@ describe("stdio proxy", () => {
     expect(response!.error).toEqual({ code: -32603, message: "boom" });
   });
 
+  it("should preserve method mapping under interleaved tools/call and tools/list requests", async () => {
+    // Exercises the tracker's ability to hold mixed methods and the dispatch
+    // path's ability to route each response to the correct handler: tools/list
+    // must be stripped of outputSchema, tools/call must be translated.
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    const translator = {
+      translate: vi.fn(async () => "TRANSLATED"),
+    };
+
+    await createProxy(detector, translator);
+
+    // Client interleaves tools/list (id=1), tools/call (id=2), tools/list (id=3)
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n",
+    );
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: {} }) + "\n",
+    );
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Server responds out of order: 2, 1, 3
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        result: { content: [{ type: "text", text: "これは翻訳対象の長いテキストです" }] },
+      }) + "\n",
+    );
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { tools: [{ name: "a", outputSchema: { x: 1 } }] },
+      }) + "\n",
+    );
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        result: { tools: [{ name: "b", outputSchema: { y: 2 } }] },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    const byId = new Map(getOutputMessages().map((m) => [m.id, m]));
+
+    // tools/call: translated
+    const call = byId.get(2)!;
+    expect((call.result as { content: { text: string }[] }).content[0].text).toBe("TRANSLATED");
+
+    // tools/list: outputSchema stripped on both
+    for (const id of [1, 3]) {
+      const resp = byId.get(id)!;
+      const tools = (resp.result as { tools: Record<string, unknown>[] }).tools;
+      expect(tools[0]).not.toHaveProperty("outputSchema");
+    }
+  });
+
+  it("should treat a response arriving after tracker TTL expiration as untracked", async () => {
+    // Tracker entries expire after 60s. A tool call response that arrives
+    // later (e.g. slow MCP server) should be forwarded verbatim rather than
+    // crashing or mis-dispatching — the worst case is the client sees the
+    // untranslated original.
+    vi.useFakeTimers();
+    try {
+      const detector = {
+        detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+        isTargetLang: vi.fn(() => false),
+      };
+      const translator = { translate: vi.fn(async () => "SHOULD NOT BE CALLED") };
+
+      await createProxy(detector, translator);
+
+      // Track a tools/call
+      mockStdin.write(
+        JSON.stringify({ jsonrpc: "2.0", id: 77, method: "tools/call", params: {} }) + "\n",
+      );
+      // Let the readline deliver the line before we flip to fake timers logic.
+      await vi.advanceTimersByTimeAsync(10);
+
+      // Advance past TTL (60s) + track a dummy to trigger eviction
+      await vi.advanceTimersByTimeAsync(61_000);
+      mockStdin.write(
+        JSON.stringify({ jsonrpc: "2.0", id: 78, method: "tools/call", params: {} }) + "\n",
+      );
+      await vi.advanceTimersByTimeAsync(10);
+
+      // Now the original id=77 response arrives — tracker has forgotten it.
+      currentChild.mockStdout.write(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 77,
+          result: { content: [{ type: "text", text: "日本語テキスト" }] },
+        }) + "\n",
+      );
+      await vi.advanceTimersByTimeAsync(50);
+
+      const messages = getOutputMessages();
+      const late = messages.find((m) => m.id === 77);
+      expect(late).toBeDefined();
+      // Forwarded verbatim (no translation attempted) — untracked path.
+      expect((late!.result as { content: { text: string }[] }).content[0].text).toBe(
+        "日本語テキスト",
+      );
+      expect(translator.translate).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should ignore a second signal while shutdown is already in progress", async () => {
+    await createProxy();
+
+    process.emit("SIGTERM" as unknown as "disconnect");
+    process.emit("SIGTERM" as unknown as "disconnect");
+
+    // shutdownInProgress guard: child.kill must fire exactly once despite
+    // two signals. Without the guard a jumpy terminal (^C ^C) would
+    // double-signal the child and race the force-kill timer.
+    expect(currentChild.kill).toHaveBeenCalledTimes(1);
+    expect(currentChild.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("should not crash when child stderr emits an error", async () => {
+    await createProxy();
+
+    // child.stderr gets an error listener alongside the pipe to process.stderr.
+    // Without it, an EPIPE while forwarding stderr would crash the proxy.
+    expect(() => {
+      currentChild.mockStderr.emit("error", new Error("EPIPE on stderr"));
+    }).not.toThrow();
+  });
+
+  it("should compute 128+signal exit code when child dies from a signal", async () => {
+    await createProxy();
+
+    // Simulate a child killed by SIGTERM (code=null, signal="SIGTERM").
+    // computeExitCode should emit 128 + sig number.
+    currentChild.emit("exit", null, "SIGTERM");
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(process.exit).toHaveBeenCalled();
+    const calls = (process.exit as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    const lastCode = calls[calls.length - 1][0] as number;
+    // SIGTERM is 15 on linux; 128 + 15 = 143.
+    expect(lastCode).toBeGreaterThan(128);
+  });
+
   it("should drain server queue before exiting on child exit", async () => {
     // Use a translator with a delay to simulate in-flight work
     let resolveTranslation: (value: string) => void;

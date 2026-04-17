@@ -548,6 +548,95 @@ describe("transformToolResult", () => {
     expect(translator.translate).not.toHaveBeenCalled();
   });
 
+  it("should preserve ISO 8601 date strings inside JSON values", async () => {
+    // An ISO timestamp is > MIN_JSON_STRING_LENGTH (20 chars), so it passes
+    // the length gate and is only spared by the isStructuralString date branch
+    // (char-code digit prefilter + ISO_DATE_PATTERN).
+    const iso = "2024-07-04T15:30:45.123Z"; // 24 chars
+    const longJa = "これは翻訳される必要のある日本語の説明文です。";
+    const jsonText = JSON.stringify({ timestamp: iso, description: longJa });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const translator = createMockTranslator();
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    const parsed = JSON.parse((content as typeof result).content[0].text);
+    expect(parsed.timestamp).toBe(iso);
+    expect(parsed.description).toBe(`[EN] ${longJa}`);
+    expect(translator.translate).toHaveBeenCalledOnce();
+  });
+
+  it("should preserve absolute file paths (no spaces) inside JSON values", async () => {
+    // Starts with '/' and has no space → isStructuralString returns true.
+    const filePath = "/usr/local/share/application/config.yaml";
+    const longJa = "これは設定ファイルに関する日本語の説明です。";
+    const jsonText = JSON.stringify({ path: filePath, description: longJa });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const parsed = JSON.parse((content as typeof result).content[0].text);
+    expect(parsed.path).toBe(filePath);
+    expect(parsed.description).toBe(`[EN] ${longJa}`);
+  });
+
+  it("should pass through resource content blocks unchanged", async () => {
+    const result = {
+      content: [
+        { type: "resource" as const, resource: { uri: "file:///a.txt", text: "長い日本語" } },
+        { type: "text" as const, text: "この画像の説明文です。長いので翻訳されます。" },
+      ],
+    };
+
+    const translator = createMockTranslator();
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    // Resource is forwarded verbatim; text is translated.
+    expect(transformed.content[0]).toEqual(result.content[0]);
+    expect(transformed.content[0]).toBe(result.content[0]);
+    expect((transformed.content[1] as { text: string }).text).toBe(
+      "[EN] この画像の説明文です。長いので翻訳されます。",
+    );
+    // Translator only invoked for the text block.
+    expect(translator.translate).toHaveBeenCalledTimes(1);
+  });
+
+  it("should translate string values inside a top-level JSON array", async () => {
+    const longA = "最初の要素に含まれる長い日本語のテキストです。";
+    const longB = "二番目の要素にも翻訳が必要な日本語があります。";
+    const jsonText = JSON.stringify([{ body: longA }, { body: longB }]);
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const parsed = JSON.parse((content as typeof result).content[0].text);
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0].body).toBe(`[EN] ${longA}`);
+    expect(parsed[1].body).toBe(`[EN] ${longB}`);
+    expect(stats.blocksTranslated).toBe(2);
+  });
+
   it("should treat all-whitespace text as a non-code-block (plain text path)", async () => {
     // All-whitespace string exercises the firstNonWsIndex fallthrough.
     // It's also (debatably) "target language", so should pass through as skipped.

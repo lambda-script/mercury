@@ -155,6 +155,50 @@ describe("Haiku Translator", () => {
     );
   });
 
+  it("should throw when the API returns an empty content array", async () => {
+    const { createHaikuTranslator } = await import(
+      "../../src/translator/haiku.js"
+    );
+    // An empty content array means response.content[0] is undefined —
+    // the current code throws TypeError when it reads `.type` on undefined.
+    // This locks in that an empty response is a hard failure (not silently
+    // returning "" as a translation), so the proxy falls back to the
+    // original text instead of clobbering it with an empty string.
+    mockCreate.mockResolvedValueOnce({ content: [] });
+
+    const translator = createHaikuTranslator(
+      { type: "api_key", apiKey: "sk-test" },
+      "claude-haiku-4-5-20251001",
+    );
+
+    await expect(translator.translate("テスト", "auto", "en")).rejects.toThrow();
+  });
+
+  it("should pass the full source text through to the model verbatim", async () => {
+    const { createHaikuTranslator } = await import(
+      "../../src/translator/haiku.js"
+    );
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: "Translated." }],
+    });
+
+    // Multi-line text with whitespace the prompt must not mangle — unlike
+    // google-free, haiku has no chunking so the raw text flows straight in.
+    const source = "一行目。\n\n二行目に改行があります。\n三行目も含まれます。";
+
+    const translator = createHaikuTranslator(
+      { type: "api_key", apiKey: "sk-test" },
+      "claude-haiku-4-5-20251001",
+    );
+    await translator.translate(source, "auto", "en");
+
+    const args = mockCreate.mock.calls[0][0] as {
+      messages: { content: string }[];
+    };
+    // Source is embedded verbatim after the prompt preamble.
+    expect(args.messages[0].content.endsWith(source)).toBe(true);
+  });
+
   it("should respect the model parameter passed at construction time", async () => {
     const { createHaikuTranslator } = await import(
       "../../src/translator/haiku.js"
