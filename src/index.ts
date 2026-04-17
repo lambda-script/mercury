@@ -5,6 +5,7 @@ import { createGoogleFreeTranslator } from "./translator/google-free.js";
 import { createHaikuTranslator } from "./translator/haiku.js";
 import type { Translator } from "./translator/index.js";
 import { createStdioProxy } from "./proxy/stdio.js";
+import { toErrorMessage } from "./utils/errors.js";
 import { logger } from "./utils/logger.js";
 
 function createTranslator(config: Config): Translator {
@@ -127,6 +128,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  logger.error(err instanceof Error ? err.message : String(err));
+  logger.error(toErrorMessage(err));
   process.exit(1);
 });

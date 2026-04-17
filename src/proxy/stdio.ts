@@ -5,6 +5,7 @@ import type { Detector } from "../detector/index.js";
 import type { Translator } from "../translator/index.js";
 import { createRequestTracker, type RequestTracker } from "./tracker.js";
 import { transformToolResult, formatTransformStats } from "../transform/tool-result.js";
+import { toErrorMessage } from "../utils/errors.js";
 import { logger } from "../utils/logger.js";
 
 /** A JSON-RPC 2.0 message (request, response, or notification). */
@@ -111,9 +112,7 @@ function createSerialQueue(label: string): SerialQueue {
   return {
     enqueue(task) {
       tail = tail.then(task).catch((err) => {
-        logger.error(
-          `[${label}] task error: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        logger.error(`[${label}] task error: ${toErrorMessage(err)}`);
       });
     },
     drain() {
@@ -175,9 +174,7 @@ export function createStdioProxy(
       process.stdout.write(JSON.stringify(message) + "\n");
     } catch (err) {
       // EPIPE if client closed stdout — log and continue rather than crash.
-      logger.warn(
-        `Failed to write to stdout: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logger.warn(`Failed to write to stdout: ${toErrorMessage(err)}`);
     }
   }
 
@@ -212,8 +209,7 @@ export function createStdioProxy(
 
       writeMessage({ ...msg, result: content });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logger.error(`Transform error: ${message}`);
+      logger.error(`Transform error: ${toErrorMessage(err)}`);
       writeMessage(msg); // Forward original on error
     }
   }
@@ -229,14 +225,14 @@ export function createStdioProxy(
 
   /** Dispatch a server-originated message. */
   async function handleServerMessage(msg: JsonRpcMessage): Promise<void> {
-    const isResponse = msg.id !== undefined && msg.method === undefined;
-    if (!isResponse) {
-      // Notification, request from server (e.g. sampling), or anything else: pass through.
+    // Only JSON-RPC responses (id without method) are candidates for translation.
+    // Notifications, server-initiated requests (e.g. sampling), etc. pass through.
+    if (msg.id === undefined || msg.method !== undefined) {
       writeMessage(msg);
       return;
     }
 
-    const method = tracker.take(msg.id!);
+    const method = tracker.take(msg.id);
     switch (method) {
       case "tools/call":
         await handleToolCallResponse(msg);
@@ -260,9 +256,7 @@ export function createStdioProxy(
     try {
       childStdin.write(JSON.stringify(msg) + "\n");
     } catch (err) {
-      logger.warn(
-        `Failed to write to child stdin: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logger.warn(`Failed to write to child stdin: ${toErrorMessage(err)}`);
     }
   }
 
@@ -303,9 +297,7 @@ export function createStdioProxy(
         try {
           await handleServerMessage(msg);
         } catch (err) {
-          logger.error(
-            `Error handling server message: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          logger.error(`Error handling server message: ${toErrorMessage(err)}`);
           // Forward original on error so the client still sees something.
           process.stdout.write(line + "\n");
         }
@@ -420,15 +412,16 @@ export function createStdioProxy(
         // Attach error listeners to all child stdio streams. Without these,
         // an EPIPE (e.g. child crashes mid-write) becomes an unhandled
         // 'error' event and terminates the proxy.
-        child.stdin.on("error", (err) => {
-          logger.warn(`Child stdin error: ${err.message}`);
-        });
-        child.stdout.on("error", (err) => {
-          logger.warn(`Child stdout error: ${err.message}`);
-        });
-        child.stderr.on("error", (err) => {
-          logger.warn(`Child stderr error: ${err.message}`);
-        });
+        const childStreams = [
+          ["stdin", child.stdin],
+          ["stdout", child.stdout],
+          ["stderr", child.stderr],
+        ] as const;
+        for (const [name, stream] of childStreams) {
+          stream.on("error", (err) => {
+            logger.warn(`Child ${name} error: ${err.message}`);
+          });
+        }
 
         setupClientStream(child);
         setupServerStream(child);
