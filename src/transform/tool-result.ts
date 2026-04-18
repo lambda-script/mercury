@@ -184,7 +184,14 @@ async function translateJsonStrings(
 
   if (typeof value === "string") {
     if (!shouldTranslateJsonString(value, detector, targetLang)) return value;
-    return translateAndTrack(value, detector, translator, targetLang, stats);
+    try {
+      return await translateAndTrack(value, detector, translator, targetLang, stats);
+    } catch (err) {
+      logger.warn(
+        `JSON string translation failed, keeping original: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return value;
+    }
   }
 
   if (Array.isArray(value)) {
@@ -352,22 +359,30 @@ export async function transformToolResult(
     return { content: result, stats };
   }
 
-  const translatedContent: McpContent[] = [];
-  for (const block of toolResult.content) {
-    if (block.type === "text") {
-      const translated = await translateText(
-        block.text,
-        detector,
-        translator,
-        targetLang,
-        stats,
-      );
-      translatedContent.push({ ...block, text: translated });
-    } else {
-      // image, resource, etc — pass through
-      translatedContent.push(block);
-    }
-  }
+  const translatedContent = await Promise.all(
+    toolResult.content.map(async (block): Promise<McpContent> => {
+      if (block.type !== "text") return block;
+      try {
+        const translated = await translateText(
+          block.text,
+          detector,
+          translator,
+          targetLang,
+          stats,
+        );
+        return { ...block, text: translated };
+      } catch (err) {
+        logger.warn(
+          `Block translation failed, keeping original: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        // translateAndTrack increments blocksTranslated before calling the
+        // translator, so undo that increment for this failed block.
+        stats.blocksTranslated -= 1;
+        stats.blocksSkipped += 1;
+        return block;
+      }
+    }),
+  );
 
   return {
     content: { ...toolResult, content: translatedContent },

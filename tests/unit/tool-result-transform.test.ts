@@ -548,6 +548,42 @@ describe("transformToolResult", () => {
     expect(translator.translate).not.toHaveBeenCalled();
   });
 
+  it("should keep original text for a failed block while translating others", async () => {
+    const result = {
+      content: [
+        { type: "text" as const, text: "最初のブロック" },
+        { type: "text" as const, text: "二番目のブロック" },
+        { type: "text" as const, text: "三番目のブロック" },
+      ],
+    };
+
+    let callCount = 0;
+    const translator: Translator = {
+      translate: vi.fn(async (text: string) => {
+        callCount++;
+        if (callCount === 2) throw new Error("translation API down");
+        return `[EN] ${text}`;
+      }),
+    };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    // First and third blocks translated successfully
+    expect(transformed.content[0].text).toBe("[EN] 最初のブロック");
+    // Second block kept original due to error
+    expect(transformed.content[1].text).toBe("二番目のブロック");
+    // Third block still translated
+    expect(transformed.content[2].text).toBe("[EN] 三番目のブロック");
+    expect(stats.blocksTranslated).toBe(2);
+    expect(stats.blocksSkipped).toBe(1);
+  });
+
   it("should treat all-whitespace text as a non-code-block (plain text path)", async () => {
     // All-whitespace string exercises the firstNonWsIndex fallthrough.
     // It's also (debatably) "target language", so should pass through as skipped.
