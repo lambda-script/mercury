@@ -213,7 +213,7 @@ export function createStdioProxy(
       writeMessage({ ...msg, result: content });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      logger.error(`Transform error: ${message}`);
+      logger.error(`Transform error (request ${msg.id}): ${message}`);
       writeMessage(msg); // Forward original on error
     }
   }

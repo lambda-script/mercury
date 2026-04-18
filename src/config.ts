@@ -27,6 +27,7 @@ export interface Config {
  *
  * @returns Configuration object with translation backend, auth, and language settings
  * @throws {Error} If haiku backend is selected but no ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is provided
+ * @throws {Error} If MERCURY_MIN_DETECT_LENGTH is set to a non-positive-integer value
  */
 export function loadConfig(): Config {
   const backend = (process.env.MERCURY_BACKEND as TranslationBackend) ?? "google-free";
