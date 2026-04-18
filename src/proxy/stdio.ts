@@ -5,6 +5,7 @@ import type { Detector } from "../detector/index.js";
 import type { Translator } from "../translator/index.js";
 import { createRequestTracker, type RequestTracker } from "./tracker.js";
 import { transformToolResult, formatTransformStats } from "../transform/tool-result.js";
+import { getErrorMessage } from "../utils/error.js";
 import { logger } from "../utils/logger.js";
 
 /** A JSON-RPC 2.0 message (request, response, or notification). */
@@ -112,7 +113,7 @@ function createSerialQueue(label: string): SerialQueue {
     enqueue(task) {
       tail = tail.then(task).catch((err) => {
         logger.error(
-          `[${label}] task error: ${err instanceof Error ? err.message : String(err)}`,
+          `[${label}] task error: ${getErrorMessage(err)}`,
         );
       });
     },
@@ -176,7 +177,7 @@ export function createStdioProxy(
     } catch (err) {
       // EPIPE if client closed stdout — log and continue rather than crash.
       logger.warn(
-        `Failed to write to stdout: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to write to stdout: ${getErrorMessage(err)}`,
       );
     }
   }
@@ -212,8 +213,7 @@ export function createStdioProxy(
 
       writeMessage({ ...msg, result: content });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logger.error(`Transform error: ${message}`);
+      logger.error(`Transform error: ${getErrorMessage(err)}`);
       writeMessage(msg); // Forward original on error
     }
   }
@@ -261,7 +261,7 @@ export function createStdioProxy(
       childStdin.write(JSON.stringify(msg) + "\n");
     } catch (err) {
       logger.warn(
-        `Failed to write to child stdin: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to write to child stdin: ${getErrorMessage(err)}`,
       );
     }
   }
@@ -304,7 +304,7 @@ export function createStdioProxy(
           await handleServerMessage(msg);
         } catch (err) {
           logger.error(
-            `Error handling server message: ${err instanceof Error ? err.message : String(err)}`,
+            `Error handling server message: ${getErrorMessage(err)}`,
           );
           // Forward original on error so the client still sees something.
           process.stdout.write(line + "\n");
