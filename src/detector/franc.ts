@@ -79,19 +79,8 @@ export function createFrancDetector(minLength: number): Detector {
 
     isTargetLang(text: string, targetLang: string): boolean {
       const target3 = toIso3(targetLang);
-
-      // Short text: check script
-      if (text.length < minLength) {
-        const scriptLang = detectByScript(text);
-        // No non-Latin script detected → assume target lang (skip translation)
-        if (!scriptLang) return true;
-        return scriptLang === target3;
-      }
-
       const result = this.detect(text);
-      if (result.lang === UNDETERMINED) {
-        return true;
-      }
+      if (result.confidence === 0) return true;
       return result.lang === target3;
     },
   };
