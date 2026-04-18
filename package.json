@@ -48,7 +48,7 @@
     "url": "https://github.com/lambda-script/mercury/issues"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.86.1",
+    "@anthropic-ai/sdk": "^0.90.0",
     "franc": "^6.2.0",
     "google-translate-api-x": "^10.7.2"
   },
