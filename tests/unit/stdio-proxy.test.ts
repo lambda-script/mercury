@@ -60,6 +60,7 @@ describe("stdio proxy", () => {
     // tests so we start clean.
     process.removeAllListeners("SIGINT");
     process.removeAllListeners("SIGTERM");
+    process.stdout.removeAllListeners("error");
 
     // Fresh child for each test
     currentChild = createMockChild();
@@ -527,6 +528,55 @@ describe("stdio proxy", () => {
     );
 
     await expect(proxy.start()).rejects.toThrow(/stdio pipes/);
+  });
+
+  it("should not crash when process.stdout emits an error (EPIPE)", async () => {
+    await createProxy();
+
+    expect(() => {
+      process.stdout.emit("error", new Error("EPIPE"));
+    }).not.toThrow();
+  });
+
+  it("should kill child if it does not exit after stdin closes", async () => {
+    await createProxy();
+
+    vi.useFakeTimers();
+
+    // Simulate client disconnect (stdin EOF)
+    mockStdin.emit("end");
+
+    // Child should not be killed immediately
+    expect(currentChild.kill).not.toHaveBeenCalled();
+
+    // Advance past the graceful shutdown timeout (5s)
+    await vi.advanceTimersByTimeAsync(5001);
+
+    // Child should have been SIGTERM'd
+    expect(currentChild.kill).toHaveBeenCalledWith("SIGTERM");
+
+    vi.useRealTimers();
+  });
+
+  it("should cancel kill timer if child exits after stdin closes", async () => {
+    await createProxy();
+
+    vi.useFakeTimers();
+
+    // Simulate client disconnect
+    mockStdin.emit("end");
+
+    // Child exits promptly (before the kill timer fires)
+    currentChild.emit("exit", 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Advance past the kill timeout
+    await vi.advanceTimersByTimeAsync(5001);
+
+    // kill should NOT have been called — timer was cancelled by child exit
+    expect(currentChild.kill).not.toHaveBeenCalledWith("SIGTERM");
+
+    vi.useRealTimers();
   });
 
   it("should reject start() on child process error event", async () => {
