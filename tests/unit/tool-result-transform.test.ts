@@ -513,6 +513,111 @@ describe("transformToolResult", () => {
     expect(parsed.body).toBe(`[EN] ${longJaText}`);
   });
 
+  it("should skip long file paths inside JSON values", async () => {
+    const longPath = "/usr/local/share/some-very-long-path/to/a/file.txt";
+    const longJaText = "これは長い日本語のテキストで、翻訳されるべきです。";
+    const jsonText = JSON.stringify({ path: longPath, body: longJaText });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.path).toBe(longPath);
+    expect(parsed.body).toBe(`[EN] ${longJaText}`);
+  });
+
+  it("should skip relative file paths starting with dot", async () => {
+    const relPath = "./src/components/very-long-component-name/index.ts";
+    const longJaText = "これは長い日本語のテキストで、翻訳されるべきです。";
+    const jsonText = JSON.stringify({ file: relPath, desc: longJaText });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const parsed = JSON.parse((content as typeof result).content[0].text);
+    expect(parsed.file).toBe(relPath);
+  });
+
+  it("should skip home-relative paths starting with tilde", async () => {
+    const homePath = "~/Documents/projects/very-long-project-name/config";
+    const longJaText = "これは長い日本語のテキストで、翻訳されるべきです。";
+    const jsonText = JSON.stringify({ loc: homePath, msg: longJaText });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const parsed = JSON.parse((content as typeof result).content[0].text);
+    expect(parsed.loc).toBe(homePath);
+  });
+
+  it("should translate path-like strings that contain spaces", async () => {
+    // Starts with "/" but has spaces → not a structural file path → translate
+    const notAPath = "/this is actually a sentence that starts with a slash";
+    const jsonText = JSON.stringify({ val: notAPath });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const translator = createMockTranslator();
+    await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    expect(translator.translate).toHaveBeenCalled();
+  });
+
+  it("should skip ISO dates inside JSON values", async () => {
+    const isoDate = "2024-03-15T10:30:00.000Z is the timestamp";
+    const longJaText = "これは長い日本語のテキストで、翻訳されるべきです。";
+    const jsonText = JSON.stringify({ ts: isoDate, body: longJaText });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const parsed = JSON.parse((content as typeof result).content[0].text);
+    expect(parsed.ts).toBe(isoDate);
+    expect(parsed.body).toBe(`[EN] ${longJaText}`);
+  });
+
+  it("should translate strings starting with digits that are not ISO dates", async () => {
+    // Starts with a digit but doesn't match YYYY-MM-DD → not structural
+    const notDate = "42 is the answer to life, the universe, and everything, obviously";
+    const jsonText = JSON.stringify({ val: notDate });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const translator = createMockTranslator();
+    await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    expect(translator.translate).toHaveBeenCalled();
+  });
+
   it("should skip code blocks nested inside JSON values", async () => {
     // String inside JSON that starts with ``` exercises the isCodeBlock
     // branch of shouldTranslateJsonString.
