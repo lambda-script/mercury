@@ -5,7 +5,8 @@ import type { Detector } from "../detector/index.js";
 import type { Translator } from "../translator/index.js";
 import { createRequestTracker, type RequestTracker } from "./tracker.js";
 import { transformToolResult, formatTransformStats } from "../transform/tool-result.js";
-import { logger } from "../utils/logger.js";
+import { logger, errorMessage } from "../utils/logger.js";
+import { firstNonWsIndex } from "../utils/strings.js";
 
 /** A JSON-RPC 2.0 message (request, response, or notification). */
 export interface JsonRpcMessage {
@@ -26,15 +27,7 @@ function isValidJsonRpcMessage(value: unknown): value is JsonRpcMessage {
  * Returns null if invalid or not a valid JSON-RPC message.
  */
 function parseJsonRpcLine(line: string): JsonRpcMessage | null {
-  // Skip empty / whitespace-only lines without allocating a trimmed copy.
-  let i = 0;
-  const len = line.length;
-  while (i < len) {
-    const ch = line.charCodeAt(i);
-    if (ch !== 0x20 && ch !== 0x09 && ch !== 0x0a && ch !== 0x0d) break;
-    i++;
-  }
-  if (i === len) return null;
+  if (firstNonWsIndex(line) === line.length) return null;
 
   try {
     const parsed = JSON.parse(line) as unknown;
@@ -112,7 +105,7 @@ function createSerialQueue(label: string): SerialQueue {
     enqueue(task) {
       tail = tail.then(task).catch((err) => {
         logger.error(
-          `[${label}] task error: ${err instanceof Error ? err.message : String(err)}`,
+          `[${label}] task error: ${errorMessage(err)}`,
         );
       });
     },
@@ -176,7 +169,7 @@ export function createStdioProxy(
     } catch (err) {
       // EPIPE if client closed stdout — log and continue rather than crash.
       logger.warn(
-        `Failed to write to stdout: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to write to stdout: ${errorMessage(err)}`,
       );
     }
   }
@@ -212,8 +205,7 @@ export function createStdioProxy(
 
       writeMessage({ ...msg, result: content });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logger.error(`Transform error: ${message}`);
+      logger.error(`Transform error: ${errorMessage(err)}`);
       writeMessage(msg); // Forward original on error
     }
   }
@@ -261,7 +253,7 @@ export function createStdioProxy(
       childStdin.write(JSON.stringify(msg) + "\n");
     } catch (err) {
       logger.warn(
-        `Failed to write to child stdin: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to write to child stdin: ${errorMessage(err)}`,
       );
     }
   }
@@ -304,7 +296,7 @@ export function createStdioProxy(
           await handleServerMessage(msg);
         } catch (err) {
           logger.error(
-            `Error handling server message: ${err instanceof Error ? err.message : String(err)}`,
+            `Error handling server message: ${errorMessage(err)}`,
           );
           // Forward original on error so the client still sees something.
           process.stdout.write(line + "\n");
