@@ -12,6 +12,7 @@ interface TrackerEntry {
   readonly ts: number;
 }
 
+/** Tracks in-flight JSON-RPC request IDs so responses can be matched to their method. */
 export interface RequestTracker {
   /** Record a request ID and its method. */
   track(id: string | number, method: string): void;
