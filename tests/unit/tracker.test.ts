@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createRequestTracker } from "../../src/proxy/tracker.js";
+import { logger } from "../../src/utils/logger.js";
+
+vi.mock("../../src/utils/logger.js", () => ({
+  logger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
 
 describe("RequestTracker", () => {
   it("should track and retrieve a request method by ID", () => {
@@ -130,6 +140,22 @@ describe("RequestTracker", () => {
       expect(tracker.take(999)).toBe("tools/list");
 
       vi.useRealTimers();
+    });
+
+    it("should log a warning when evicting at capacity", () => {
+      vi.mocked(logger.warn).mockClear();
+      const tracker = createRequestTracker();
+
+      for (let i = 0; i < 1000; i++) {
+        tracker.track(i, "tools/call");
+      }
+
+      // The 1001st entry triggers capacity eviction
+      tracker.track(1000, "tools/list");
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("capacity"),
+      );
     });
   });
 });

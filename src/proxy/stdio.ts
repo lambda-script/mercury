@@ -281,9 +281,20 @@ export function createStdioProxy(
       }
     });
 
-    // Close child stdin when our stdin ends
+    // When our stdin ends the client is gone — close child stdin and
+    // schedule a force-kill in case the child ignores the EOF.
     process.stdin.on("end", () => {
       child.stdin?.end();
+      const eofKillTimer = setTimeout(() => {
+        logger.warn("Child did not exit after stdin EOF, force killing");
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // Child already dead
+        }
+      }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
+      eofKillTimer.unref();
+      child.once("exit", () => clearTimeout(eofKillTimer));
     });
   }
 
@@ -307,7 +318,13 @@ export function createStdioProxy(
             `Error handling server message: ${err instanceof Error ? err.message : String(err)}`,
           );
           // Forward original on error so the client still sees something.
-          process.stdout.write(line + "\n");
+          try {
+            process.stdout.write(line + "\n");
+          } catch (writeErr) {
+            logger.warn(
+              `Failed to forward raw line: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`,
+            );
+          }
         }
       });
     });
@@ -428,6 +445,11 @@ export function createStdioProxy(
         });
         child.stderr.on("error", (err) => {
           logger.warn(`Child stderr error: ${err.message}`);
+        });
+
+        // Guard our own stdout against EPIPE when the client disconnects.
+        process.stdout.on("error", (err) => {
+          logger.warn(`stdout error: ${err.message}`);
         });
 
         setupClientStream(child);

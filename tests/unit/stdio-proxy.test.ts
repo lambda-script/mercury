@@ -60,6 +60,7 @@ describe("stdio proxy", () => {
     // tests so we start clean.
     process.removeAllListeners("SIGINT");
     process.removeAllListeners("SIGTERM");
+    process.stdout.removeAllListeners("error");
 
     // Fresh child for each test
     currentChild = createMockChild();
@@ -745,5 +746,51 @@ describe("stdio proxy", () => {
 
     // Now process.exit should have been called
     expect(process.exit).toHaveBeenCalledWith(0);
+  });
+
+  it("should not crash when process.stdout emits an error", async () => {
+    await createProxy();
+
+    expect(() => {
+      process.stdout.emit("error", new Error("EPIPE"));
+    }).not.toThrow();
+  });
+
+  it("should force-kill child if it does not exit after stdin EOF", async () => {
+    await createProxy();
+
+    vi.useFakeTimers();
+
+    // Simulate client disconnect (stdin EOF)
+    mockStdin.emit("end");
+
+    // Child hasn't been killed yet — timeout hasn't fired
+    expect(currentChild.kill).not.toHaveBeenCalled();
+
+    // Advance past the graceful shutdown timeout (5000ms)
+    vi.advanceTimersByTime(5001);
+
+    // Now child should have been force-killed
+    expect(currentChild.kill).toHaveBeenCalledWith("SIGKILL");
+
+    vi.useRealTimers();
+  });
+
+  it("should cancel force-kill when child exits after stdin EOF", async () => {
+    await createProxy();
+
+    vi.useFakeTimers();
+
+    mockStdin.emit("end");
+    // Child exits normally before the timeout
+    currentChild.emit("exit", 0, null);
+
+    // Advance well past the timeout
+    vi.advanceTimersByTime(10000);
+
+    // SIGKILL should NOT have been sent — timer was cleared by exit
+    expect(currentChild.kill).not.toHaveBeenCalledWith("SIGKILL");
+
+    vi.useRealTimers();
   });
 });
