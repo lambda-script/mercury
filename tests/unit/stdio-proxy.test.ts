@@ -4,14 +4,18 @@ import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 
 // Mock logger to suppress output during tests
-vi.mock("../../src/utils/logger.js", () => ({
-  logger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+vi.mock("../../src/utils/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/utils/logger.js")>();
+  return {
+    errorMessage: actual.errorMessage,
+    logger: {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    },
+  };
+});
 
 // Create a mock child process with controllable stdio streams
 function createMockChild() {

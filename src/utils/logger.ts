@@ -35,6 +35,11 @@ function write(formatted: string): void {
   }
 }
 
+/** Extract a message string from an unknown thrown value. */
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * Process-wide logger for Mercury.
  *

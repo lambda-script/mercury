@@ -2,6 +2,7 @@ import type { Detector } from "../detector/index.js";
 import type { Translator } from "../translator/index.js";
 import { LANG_NAMES } from "../utils/lang.js";
 import { logger } from "../utils/logger.js";
+import { firstNonWsIndex } from "../utils/strings.js";
 import { estimateTokens } from "../utils/tokens.js";
 
 /** Statistics from transforming a single MCP tool result. */
@@ -53,18 +54,6 @@ const MAX_JSON_DEPTH = 50;
 // run any regex at all.
 const URL_PATTERN = /^https?:\/\//;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}/;
-
-// Find the index of the first non-whitespace character.
-// Avoids allocating a trimmed string copy just to check a prefix.
-function firstNonWsIndex(text: string): number {
-  for (let i = 0; i < text.length; i++) {
-    const ch = text.charCodeAt(i);
-    if (ch !== 0x20 && ch !== 0x09 && ch !== 0x0a && ch !== 0x0d && ch !== 0x0c) {
-      return i;
-    }
-  }
-  return text.length;
-}
 
 // Heuristic: does the text look like a markdown code block?
 function isCodeBlock(text: string): boolean {
@@ -364,22 +353,21 @@ export async function transformToolResult(
     return { content: result, stats };
   }
 
-  const translatedContent: McpContent[] = [];
-  for (const block of toolResult.content) {
-    if (block.type === "text") {
-      const translated = await translateText(
-        block.text,
-        detector,
-        translator,
-        targetLang,
-        stats,
-      );
-      translatedContent.push({ ...block, text: translated });
-    } else {
-      // image, resource, etc — pass through
-      translatedContent.push(block);
-    }
-  }
+  const translatedContent = await Promise.all(
+    toolResult.content.map(async (block): Promise<McpContent> => {
+      if (block.type === "text") {
+        const translated = await translateText(
+          block.text,
+          detector,
+          translator,
+          targetLang,
+          stats,
+        );
+        return { ...block, text: translated };
+      }
+      return block;
+    }),
+  );
 
   return {
     content: { ...toolResult, content: translatedContent },
