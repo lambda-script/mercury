@@ -52,6 +52,61 @@ describe("FrancDetector", () => {
     });
   });
 
+  describe("cache", () => {
+    it("should return cached result for identical text", () => {
+      const cachingDetector = createFrancDetector(20);
+      const text = "これは日本語のテストテキストです。翻訳が必要です。";
+
+      const first = cachingDetector.detect(text);
+      const second = cachingDetector.detect(text);
+
+      expect(second).toBe(first);
+    });
+
+    it("should invalidate cache when text changes", () => {
+      const cachingDetector = createFrancDetector(20);
+
+      const r1 = cachingDetector.detect("This is a test text in English for language detection.");
+      const r2 = cachingDetector.detect("これは日本語のテストテキストです。翻訳が必要です。");
+
+      expect(r1.lang).toBe("eng");
+      expect(r2.lang).toBe("jpn");
+    });
+  });
+
+  describe("kana override", () => {
+    it("should override cmn to jpn when text contains kana", () => {
+      // Kanji-heavy text with some kana — franc may return "cmn" but
+      // kana presence is definitive proof of Japanese.
+      const text = "漢字が多い文章ですが、ひらがなも含まれています。翻訳テストです。";
+      const result = detector.detect(text);
+      expect(result.lang).toBe("jpn");
+    });
+  });
+
+  describe("isTargetLang with non-English targets", () => {
+    it("should return true for short non-Latin text matching target lang", () => {
+      // Short Korean text (< minLength) — script detection returns "kor".
+      // When target is "kor", should match and return true.
+      expect(detector.isTargetLang("안녕", "kor")).toBe(true);
+    });
+
+    it("should return false for short non-Latin text not matching target lang", () => {
+      // Short Japanese text when target is Korean
+      expect(detector.isTargetLang("こんにちは", "kor")).toBe(false);
+    });
+
+    it("should return true for long text matching a non-English target", () => {
+      const longJapanese = "これは日本語のテストテキストです。翻訳が必要です。";
+      expect(detector.isTargetLang(longJapanese, "jpn")).toBe(true);
+    });
+
+    it("should return false for long text not matching target", () => {
+      const longJapanese = "これは日本語のテストテキストです。翻訳が必要です。";
+      expect(detector.isTargetLang(longJapanese, "kor")).toBe(false);
+    });
+  });
+
   describe("custom minLength", () => {
     it("should use script detection for short non-Latin text", () => {
       const strictDetector = createFrancDetector(100);

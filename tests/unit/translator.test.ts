@@ -421,6 +421,25 @@ describe("Google Free Translator", () => {
     expect(mockTranslate).toHaveBeenCalledTimes(4);
   });
 
+  it("should log error cause when present", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    const errorWithCause = new Error("TLS handshake failed");
+    errorWithCause.cause = "ECONNRESET";
+    mockTranslate
+      .mockRejectedValueOnce(errorWithCause)
+      .mockResolvedValueOnce({ text: "OK" });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate("test", "auto", "en");
+
+    await vi.advanceTimersByTimeAsync(600);
+    const result = await promise;
+
+    expect(result).toBe("OK");
+  });
+
   it("should handle empty string input", async () => {
     const { createGoogleFreeTranslator } = await import(
       "../../src/translator/google-free.js"

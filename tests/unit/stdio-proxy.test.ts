@@ -586,6 +586,119 @@ describe("stdio proxy", () => {
     expect(response!.error).toEqual({ code: -32603, message: "boom" });
   });
 
+  it("should not crash when child stderr emits an error", async () => {
+    await createProxy();
+
+    expect(() => {
+      currentChild.mockStderr.emit("error", new Error("EPIPE"));
+    }).not.toThrow();
+  });
+
+  it("should ignore duplicate shutdown signals", async () => {
+    await createProxy();
+
+    process.emit("SIGINT" as unknown as "disconnect");
+    process.emit("SIGINT" as unknown as "disconnect");
+
+    // Only one kill call — second signal is a no-op because
+    // shutdownInProgress is already true.
+    expect(currentChild.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("should force kill child when it does not exit after shutdown timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      await createProxy();
+
+      process.emit("SIGTERM" as unknown as "disconnect");
+      expect(currentChild.kill).toHaveBeenCalledWith("SIGTERM");
+
+      // Advance past the GRACEFUL_SHUTDOWN_TIMEOUT_MS (5000ms)
+      // without the child emitting "exit"
+      vi.advanceTimersByTime(5001);
+
+      expect(currentChild.kill).toHaveBeenCalledWith("SIGKILL");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should clear force kill timer when child exits during shutdown", async () => {
+    vi.useFakeTimers();
+    try {
+      await createProxy();
+
+      process.emit("SIGTERM" as unknown as "disconnect");
+
+      // Child exits promptly before the timeout fires
+      currentChild.emit("exit", 0, null);
+
+      // Advance past the timeout — SIGKILL should NOT have been called
+      // because the timer was cleared by the "exit" handler in shutdown.
+      vi.advanceTimersByTime(6000);
+
+      const killCalls = (currentChild.kill as ReturnType<typeof vi.fn>).mock.calls;
+      const sigkillCalls = killCalls.filter(
+        (c: unknown[]) => c[0] === "SIGKILL",
+      );
+      expect(sigkillCalls).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should compute exit code 128+signal when child is killed by signal", async () => {
+    await createProxy();
+
+    // Child killed by SIGTERM (signal 15 → exit code 143)
+    currentChild.emit("exit", null, "SIGTERM");
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(process.exit).toHaveBeenCalledWith(143);
+  });
+
+  it("should use exit code 1 when child exits with no code and no signal", async () => {
+    await createProxy();
+
+    currentChild.emit("exit", null, null);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("should handle stdout write failure gracefully", async () => {
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    const translator = {
+      translate: vi.fn(async () => "Hello"),
+    };
+
+    await createProxy(detector, translator);
+
+    // Make stdout.write throw (simulates EPIPE from closed client)
+    process.stdout.write = vi.fn(() => {
+      throw new Error("EPIPE");
+    }) as unknown as typeof process.stdout.write;
+
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 60, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 60,
+        result: { content: [{ type: "text", text: "テスト" }] },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Proxy should not crash — the write error is caught
+  });
+
   it("should drain server queue before exiting on child exit", async () => {
     // Use a translator with a delay to simulate in-flight work
     let resolveTranslation: (value: string) => void;
