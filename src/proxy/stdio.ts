@@ -181,10 +181,20 @@ export function createStdioProxy(
     }
   }
 
+  function writeRawLine(line: string): void {
+    try {
+      process.stdout.write(line + "\n");
+    } catch (err) {
+      logger.warn(
+        `Failed to write to stdout: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   /** Translate a tools/call response, falling back to the original on error. */
-  async function handleToolCallResponse(msg: JsonRpcMessage): Promise<void> {
+  async function handleToolCallResponse(msg: JsonRpcMessage, rawLine: string): Promise<void> {
     if (msg.result === undefined) {
-      writeMessage(msg);
+      writeRawLine(rawLine);
       return;
     }
 
@@ -219,46 +229,43 @@ export function createStdioProxy(
   }
 
   /** Strip outputSchema from a tools/list response. */
-  function handleToolListResponse(msg: JsonRpcMessage): void {
+  function handleToolListResponse(msg: JsonRpcMessage, rawLine: string): void {
     if (msg.result === undefined) {
-      writeMessage(msg);
+      writeRawLine(rawLine);
       return;
     }
     writeMessage({ ...msg, result: stripOutputSchemas(msg.result) });
   }
 
   /** Dispatch a server-originated message. */
-  async function handleServerMessage(msg: JsonRpcMessage): Promise<void> {
+  async function handleServerMessage(msg: JsonRpcMessage, rawLine: string): Promise<void> {
     const isResponse = msg.id !== undefined && msg.method === undefined;
     if (!isResponse) {
-      // Notification, request from server (e.g. sampling), or anything else: pass through.
-      writeMessage(msg);
+      writeRawLine(rawLine);
       return;
     }
 
     const method = tracker.take(msg.id!);
     switch (method) {
       case "tools/call":
-        await handleToolCallResponse(msg);
+        await handleToolCallResponse(msg, rawLine);
         return;
       case "tools/list":
-        handleToolListResponse(msg);
+        handleToolListResponse(msg, rawLine);
         return;
       default:
-        writeMessage(msg);
+        writeRawLine(rawLine);
     }
   }
 
-  function handleClientMessage(msg: JsonRpcMessage, childStdin: NodeJS.WritableStream): void {
-    // Track requests so we know which responses to transform.
+  function handleClientMessage(msg: JsonRpcMessage, rawLine: string, childStdin: NodeJS.WritableStream): void {
     if (msg.id !== undefined && msg.method !== undefined) {
       if (msg.method === "tools/call" || msg.method === "tools/list") {
         tracker.track(msg.id, msg.method);
       }
     }
-    // Forward to child process. Catch EPIPE so a dead child doesn't crash us.
     try {
-      childStdin.write(JSON.stringify(msg) + "\n");
+      childStdin.write(rawLine + "\n");
     } catch (err) {
       logger.warn(
         `Failed to write to child stdin: ${err instanceof Error ? err.message : String(err)}`,
@@ -277,7 +284,7 @@ export function createStdioProxy(
     clientReader.on("line", (line) => {
       const msg = parseJsonRpcLine(line);
       if (msg && child.stdin) {
-        handleClientMessage(msg, child.stdin);
+        handleClientMessage(msg, line, child.stdin);
       }
     });
 
@@ -312,7 +319,7 @@ export function createStdioProxy(
         const msg = parseJsonRpcLine(line);
         if (!msg) return;
         try {
-          await handleServerMessage(msg);
+          await handleServerMessage(msg, line);
         } catch (err) {
           logger.error(
             `Error handling server message: ${err instanceof Error ? err.message : String(err)}`,
