@@ -170,11 +170,20 @@ export function createStdioProxy(
   // Hoisted so the exit handler can drain in-flight translations before exit.
   const serverQueue = createSerialQueue("server-queue");
 
+  function writeRawLine(line: string): void {
+    try {
+      process.stdout.write(line + "\n");
+    } catch (err) {
+      logger.warn(
+        `Failed to write to stdout: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   function writeMessage(message: JsonRpcMessage): void {
     try {
       process.stdout.write(JSON.stringify(message) + "\n");
     } catch (err) {
-      // EPIPE if client closed stdout — log and continue rather than crash.
       logger.warn(
         `Failed to write to stdout: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -182,9 +191,9 @@ export function createStdioProxy(
   }
 
   /** Translate a tools/call response, falling back to the original on error. */
-  async function handleToolCallResponse(msg: JsonRpcMessage): Promise<void> {
+  async function handleToolCallResponse(line: string, msg: JsonRpcMessage): Promise<void> {
     if (msg.result === undefined) {
-      writeMessage(msg);
+      writeRawLine(line);
       return;
     }
 
@@ -214,51 +223,48 @@ export function createStdioProxy(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.error(`Transform error: ${message}`);
-      writeMessage(msg); // Forward original on error
+      writeRawLine(line);
     }
   }
 
   /** Strip outputSchema from a tools/list response. */
-  function handleToolListResponse(msg: JsonRpcMessage): void {
+  function handleToolListResponse(line: string, msg: JsonRpcMessage): void {
     if (msg.result === undefined) {
-      writeMessage(msg);
+      writeRawLine(line);
       return;
     }
     writeMessage({ ...msg, result: stripOutputSchemas(msg.result) });
   }
 
   /** Dispatch a server-originated message. */
-  async function handleServerMessage(msg: JsonRpcMessage): Promise<void> {
+  async function handleServerMessage(line: string, msg: JsonRpcMessage): Promise<void> {
     const isResponse = msg.id !== undefined && msg.method === undefined;
     if (!isResponse) {
-      // Notification, request from server (e.g. sampling), or anything else: pass through.
-      writeMessage(msg);
+      writeRawLine(line);
       return;
     }
 
     const method = tracker.take(msg.id!);
     switch (method) {
       case "tools/call":
-        await handleToolCallResponse(msg);
+        await handleToolCallResponse(line, msg);
         return;
       case "tools/list":
-        handleToolListResponse(msg);
+        handleToolListResponse(line, msg);
         return;
       default:
-        writeMessage(msg);
+        writeRawLine(line);
     }
   }
 
-  function handleClientMessage(msg: JsonRpcMessage, childStdin: NodeJS.WritableStream): void {
-    // Track requests so we know which responses to transform.
+  function handleClientMessage(line: string, msg: JsonRpcMessage, childStdin: NodeJS.WritableStream): void {
     if (msg.id !== undefined && msg.method !== undefined) {
       if (msg.method === "tools/call" || msg.method === "tools/list") {
         tracker.track(msg.id, msg.method);
       }
     }
-    // Forward to child process. Catch EPIPE so a dead child doesn't crash us.
     try {
-      childStdin.write(JSON.stringify(msg) + "\n");
+      childStdin.write(line + "\n");
     } catch (err) {
       logger.warn(
         `Failed to write to child stdin: ${err instanceof Error ? err.message : String(err)}`,
@@ -277,7 +283,7 @@ export function createStdioProxy(
     clientReader.on("line", (line) => {
       const msg = parseJsonRpcLine(line);
       if (msg && child.stdin) {
-        handleClientMessage(msg, child.stdin);
+        handleClientMessage(line, msg, child.stdin);
       }
     });
 
@@ -301,7 +307,7 @@ export function createStdioProxy(
         const msg = parseJsonRpcLine(line);
         if (!msg) return;
         try {
-          await handleServerMessage(msg);
+          await handleServerMessage(line, msg);
         } catch (err) {
           logger.error(
             `Error handling server message: ${err instanceof Error ? err.message : String(err)}`,

@@ -188,11 +188,12 @@ async function translateJsonStrings(
   }
 
   if (Array.isArray(value)) {
-    return Promise.all(
+    const translated = await Promise.all(
       value.map((item) =>
         translateJsonStrings(item, detector, translator, targetLang, stats, depth + 1),
       ),
     );
+    return translated.every((v, i) => v === value[i]) ? value : translated;
   }
 
   if (typeof value === "object" && value !== null) {
@@ -202,6 +203,7 @@ async function translateJsonStrings(
         translateJsonStrings(val, detector, translator, targetLang, stats, depth + 1),
       ),
     );
+    if (translatedValues.every((v, i) => v === entries[i][1])) return value;
     const result: Record<string, unknown> = {};
     for (let i = 0; i < entries.length; i++) {
       result[entries[i][0]] = translatedValues[i];
