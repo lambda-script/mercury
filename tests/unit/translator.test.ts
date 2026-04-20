@@ -35,14 +35,18 @@ vi.mock("google-translate-api-x", () => ({
 }));
 
 // Suppress logger output during tests
-vi.mock("../../src/utils/logger.js", () => ({
-  logger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+vi.mock("../../src/utils/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/utils/logger.js")>();
+  return {
+    errorMessage: actual.errorMessage,
+    logger: {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    },
+  };
+});
 
 describe("Google Free Translator", () => {
   beforeEach(() => {

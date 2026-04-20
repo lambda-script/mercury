@@ -163,25 +163,20 @@ export function createStdioProxy(
   // Hoisted so the exit handler can drain in-flight translations before exit.
   const serverQueue = createSerialQueue("server-queue");
 
-  function writeMessage(message: JsonRpcMessage): void {
+  function safeStdoutWrite(data: string): void {
     try {
-      process.stdout.write(JSON.stringify(message) + "\n");
+      process.stdout.write(data + "\n");
     } catch (err) {
-      // EPIPE if client closed stdout — log and continue rather than crash.
-      logger.warn(
-        `Failed to write to stdout: ${errorMessage(err)}`,
-      );
+      logger.warn(`Failed to write to stdout: ${errorMessage(err)}`);
     }
   }
 
+  function writeMessage(message: JsonRpcMessage): void {
+    safeStdoutWrite(JSON.stringify(message));
+  }
+
   function writeRawLine(line: string): void {
-    try {
-      process.stdout.write(line + "\n");
-    } catch (err) {
-      logger.warn(
-        `Failed to write to stdout: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    safeStdoutWrite(line);
   }
 
   /** Translate a tools/call response, falling back to the original on error. */
@@ -316,14 +311,7 @@ export function createStdioProxy(
           logger.error(
             `Error handling server message: ${errorMessage(err)}`,
           );
-          // Forward original on error so the client still sees something.
-          try {
-            process.stdout.write(line + "\n");
-          } catch (writeErr) {
-            logger.warn(
-              `Failed to forward raw line: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`,
-            );
-          }
+          writeRawLine(line);
         }
       });
     });

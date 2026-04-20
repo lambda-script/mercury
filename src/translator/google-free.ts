@@ -1,6 +1,6 @@
 import translate from "google-translate-api-x";
 import type { Translator } from "./index.js";
-import { logger } from "../utils/logger.js";
+import { logger, errorMessage } from "../utils/logger.js";
 
 const MAX_RETRIES = 3;
 const INITIAL_DELAY_MS = 500;
@@ -38,14 +38,6 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-}
-
-function getErrorMessage(err: unknown): string {
-  if (err instanceof Error) {
-    const cause = err.cause ? ` (cause: ${err.cause})` : "";
-    return `${err.message}${cause}`;
-  }
-  return String(err);
 }
 
 /**
@@ -155,7 +147,7 @@ async function translateChunk(
 
       return result.text;
     } catch (err) {
-      const errorDetail = getErrorMessage(err);
+      const errorDetail = errorMessage(err);
       logger.warn(
         `Translation attempt ${attempt + 1}/${MAX_RETRIES} failed (tld=${tld}, ${text.length} chars): ${errorDetail}`,
       );

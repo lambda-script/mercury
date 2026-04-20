@@ -37,7 +37,11 @@ function write(formatted: string): void {
 
 /** Extract a message string from an unknown thrown value. */
 export function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  if (err instanceof Error) {
+    const cause = err.cause ? ` (cause: ${err.cause})` : "";
+    return `${err.message}${cause}`;
+  }
+  return String(err);
 }
 
 /**
