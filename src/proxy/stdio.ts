@@ -32,12 +32,12 @@ function parseJsonRpcLine(line: string): JsonRpcMessage | null {
   try {
     const parsed = JSON.parse(line) as unknown;
     if (!isValidJsonRpcMessage(parsed)) {
-      logger.debug("Non-object JSON, dropping");
+      logger.debug("Non-object JSON, passing through");
       return null;
     }
     return parsed;
   } catch {
-    logger.debug("Non-JSON line, dropping");
+    logger.debug("Non-JSON line, passing through");
     return null;
   }
 }
@@ -274,9 +274,16 @@ export function createStdioProxy(
       logger.warn(`Client readline error: ${err.message}`);
     });
     clientReader.on("line", (line) => {
+      if (!child.stdin) return;
       const msg = parseJsonRpcLine(line);
-      if (msg && child.stdin) {
+      if (msg) {
         handleClientMessage(msg, line, child.stdin);
+      } else if (firstNonWsIndex(line) < line.length) {
+        try {
+          child.stdin.write(line + "\n");
+        } catch (err) {
+          logger.warn(`Failed to write to child stdin: ${errorMessage(err)}`);
+        }
       }
     });
 
@@ -309,7 +316,12 @@ export function createStdioProxy(
     serverReader.on("line", (line) => {
       serverQueue.enqueue(async () => {
         const msg = parseJsonRpcLine(line);
-        if (!msg) return;
+        if (!msg) {
+          if (firstNonWsIndex(line) < line.length) {
+            writeRawLine(line);
+          }
+          return;
+        }
         try {
           await handleServerMessage(msg, line);
         } catch (err) {

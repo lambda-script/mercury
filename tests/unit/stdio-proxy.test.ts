@@ -154,19 +154,20 @@ describe("stdio proxy", () => {
     expect(messages[0].result).toEqual({ some: "data" });
   });
 
-  it("should silently drop malformed JSON lines from server", async () => {
+  it("should forward non-JSON lines from server as-is", async () => {
     await createProxy();
 
     currentChild.mockStdout.write("this is not json\n");
     currentChild.mockStdout.write("{malformed json\n");
-    currentChild.mockStdout.write("\n");
 
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(getOutputMessages()).toHaveLength(0);
+    const rawOutput = stdoutWrites.map((w) => w.trimEnd());
+    expect(rawOutput).toContain("this is not json");
+    expect(rawOutput).toContain("{malformed json");
   });
 
-  it("should drop non-object JSON values from server", async () => {
+  it("should forward non-object JSON values from server as-is", async () => {
     await createProxy();
 
     currentChild.mockStdout.write("[1, 2, 3]\n");
@@ -174,7 +175,38 @@ describe("stdio proxy", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(getOutputMessages()).toHaveLength(0);
+    const rawOutput = stdoutWrites.map((w) => w.trimEnd());
+    expect(rawOutput).toContain("[1, 2, 3]");
+    expect(rawOutput).toContain('"just a string"');
+  });
+
+  it("should drop empty and whitespace-only lines from server", async () => {
+    await createProxy();
+
+    currentChild.mockStdout.write("\n");
+    currentChild.mockStdout.write("   \n");
+    currentChild.mockStdout.write("\t\n");
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(stdoutWrites).toHaveLength(0);
+  });
+
+  it("should forward non-JSON lines from client to child stdin", async () => {
+    await createProxy();
+
+    const childStdinData: string[] = [];
+    currentChild.mockStdin.on("data", (chunk: Buffer) => {
+      childStdinData.push(chunk.toString());
+    });
+
+    mockStdin.write("not valid json\n");
+    mockStdin.write("{broken json\n");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const joined = childStdinData.join("");
+    expect(joined).toContain("not valid json");
+    expect(joined).toContain("{broken json");
   });
 
   it("should strip outputSchema from tools/list responses", async () => {
