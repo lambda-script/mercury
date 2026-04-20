@@ -189,23 +189,24 @@ async function translateJsonStrings(
   }
 
   if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value);
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj);
     const translatedValues = await Promise.all(
-      entries.map(([, val]) =>
-        translateJsonStrings(val, detector, translator, targetLang, stats, depth + 1),
+      keys.map((key) =>
+        translateJsonStrings(obj[key], detector, translator, targetLang, stats, depth + 1),
       ),
     );
     let changed = false;
-    for (let i = 0; i < entries.length; i++) {
-      if (translatedValues[i] !== entries[i][1]) {
+    for (let i = 0; i < keys.length; i++) {
+      if (translatedValues[i] !== obj[keys[i]]) {
         changed = true;
         break;
       }
     }
     if (!changed) return value;
     const result: Record<string, unknown> = {};
-    for (let i = 0; i < entries.length; i++) {
-      result[entries[i][0]] = translatedValues[i];
+    for (let i = 0; i < keys.length; i++) {
+      result[keys[i]] = translatedValues[i];
     }
     return result;
   }
@@ -363,11 +364,15 @@ export async function transformToolResult(
           targetLang,
           stats,
         );
-        return { ...block, text: translated };
+        return translated === block.text ? block : { ...block, text: translated };
       }
       return block;
     }),
   );
+
+  if (stats.blocksTranslated === 0) {
+    return { content: result, stats };
+  }
 
   return {
     content: { ...toolResult, content: translatedContent },

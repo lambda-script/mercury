@@ -209,11 +209,11 @@ export function createStdioProxy(
         stats.toolCallsTranslated += 1;
         logger.info(`${formatTransformStats(transformStats)} | ${elapsedMs}ms`);
         logger.info(`[session] #${stats.requestCount} | total saved: ~${stats.tokensSaved} tok`);
+        writeMessage({ ...msg, result: content });
       } else {
         stats.toolCallsPassedThrough += 1;
+        writeRawLine(rawLine);
       }
-
-      writeMessage({ ...msg, result: content });
     } catch (err) {
       logger.error(`Transform error: ${errorMessage(err)}`);
       writeMessage(msg); // Forward original on error
