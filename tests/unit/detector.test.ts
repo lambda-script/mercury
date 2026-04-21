@@ -124,4 +124,74 @@ describe("FrancDetector", () => {
       expect(result.confidence).toBe(0);
     });
   });
+
+  describe("script-based detection for short text", () => {
+    const shortDetector = createFrancDetector(200);
+
+    it("should detect short Korean text by Hangul script", () => {
+      const result = shortDetector.detect("안녕하세요 세계");
+      expect(result.lang).toBe("kor");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should detect short Arabic text by Arabic script", () => {
+      const result = shortDetector.detect("مرحبا بالعالم");
+      expect(result.lang).toBe("ara");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should detect short Hindi text by Devanagari script", () => {
+      const result = shortDetector.detect("नमस्ते दुनिया");
+      expect(result.lang).toBe("hin");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should detect short Bengali text by Bengali script", () => {
+      const result = shortDetector.detect("হ্যালো বিশ্ব");
+      expect(result.lang).toBe("ben");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should detect short Thai text by Thai script", () => {
+      const result = shortDetector.detect("สวัสดีชาวโลก");
+      expect(result.lang).toBe("tha");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should detect short Russian text by Cyrillic script", () => {
+      const result = shortDetector.detect("Привет мир");
+      expect(result.lang).toBe("rus");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should detect short CJK text (no kana) as Chinese", () => {
+      const result = shortDetector.detect("你好世界");
+      expect(result.lang).toBe("cmn");
+      expect(result.confidence).toBe(1);
+    });
+  });
+
+  describe("franc kana override for long text", () => {
+    it("should keep cmn for pure Chinese text without any kana", () => {
+      // Long Chinese text with no kana characters — franc detects "cmn"
+      // and the kana override should NOT apply.
+      const pureChinese = "这是一段很长的中文文本，用于测试语言检测功能。这段文字完全由汉字组成，没有任何日文假名字符。";
+      const result = detector.detect(pureChinese);
+      expect(result.lang).toBe("cmn");
+      expect(result.confidence).toBe(1);
+    });
+  });
+
+  describe("isTargetLang with ISO 639-1 codes", () => {
+    it("should convert two-letter target code to ISO 639-3 for comparison", () => {
+      // "en" → "eng" via toIso3
+      const longEnglish = "This is a long English text that should be detected as English by franc analysis.";
+      expect(detector.isTargetLang(longEnglish, "en")).toBe(true);
+    });
+
+    it("should return false for non-matching two-letter target code", () => {
+      const longJapanese = "これは日本語のテストテキストです。翻訳が必要です。";
+      expect(detector.isTargetLang(longJapanese, "en")).toBe(false);
+    });
+  });
 });
