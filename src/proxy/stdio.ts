@@ -274,9 +274,18 @@ export function createStdioProxy(
       logger.warn(`Client readline error: ${err.message}`);
     });
     clientReader.on("line", (line) => {
+      if (!child.stdin) return;
       const msg = parseJsonRpcLine(line);
-      if (msg && child.stdin) {
+      if (msg) {
         handleClientMessage(msg, line, child.stdin);
+      } else {
+        try {
+          child.stdin.write(line + "\n");
+        } catch (err) {
+          logger.warn(
+            `Failed to write to child stdin: ${errorMessage(err)}`,
+          );
+        }
       }
     });
 
@@ -309,7 +318,10 @@ export function createStdioProxy(
     serverReader.on("line", (line) => {
       serverQueue.enqueue(async () => {
         const msg = parseJsonRpcLine(line);
-        if (!msg) return;
+        if (!msg) {
+          writeRawLine(line);
+          return;
+        }
         try {
           await handleServerMessage(msg, line);
         } catch (err) {

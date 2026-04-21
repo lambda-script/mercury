@@ -154,7 +154,7 @@ describe("stdio proxy", () => {
     expect(messages[0].result).toEqual({ some: "data" });
   });
 
-  it("should silently drop malformed JSON lines from server", async () => {
+  it("should forward non-JSON-RPC lines from server transparently", async () => {
     await createProxy();
 
     currentChild.mockStdout.write("this is not json\n");
@@ -163,10 +163,12 @@ describe("stdio proxy", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(getOutputMessages()).toHaveLength(0);
+    expect(stdoutWrites).toContainEqual("this is not json\n");
+    expect(stdoutWrites).toContainEqual("{malformed json\n");
+    expect(stdoutWrites).toContainEqual("\n");
   });
 
-  it("should drop non-object JSON values from server", async () => {
+  it("should forward non-object JSON values from server transparently", async () => {
     await createProxy();
 
     currentChild.mockStdout.write("[1, 2, 3]\n");
@@ -174,7 +176,8 @@ describe("stdio proxy", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(getOutputMessages()).toHaveLength(0);
+    expect(stdoutWrites).toContainEqual("[1, 2, 3]\n");
+    expect(stdoutWrites).toContainEqual('"just a string"\n');
   });
 
   it("should strip outputSchema from tools/list responses", async () => {
@@ -477,6 +480,26 @@ describe("stdio proxy", () => {
     await new Promise((r) => setTimeout(r, 50));
 
     expect(childStdinData.join("")).toContain('"ping"');
+  });
+
+  it("should forward non-JSON-RPC lines from client to child", async () => {
+    await createProxy();
+
+    const childStdinData: string[] = [];
+    currentChild.mockStdin.on("data", (chunk: Buffer) => {
+      childStdinData.push(chunk.toString());
+    });
+
+    mockStdin.write("this is not json\n");
+    mockStdin.write("[1, 2, 3]\n");
+    mockStdin.write("{malformed\n");
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const joined = childStdinData.join("");
+    expect(joined).toContain("this is not json");
+    expect(joined).toContain("[1, 2, 3]");
+    expect(joined).toContain("{malformed");
   });
 
   it("should reject when spawn() throws synchronously", async () => {
