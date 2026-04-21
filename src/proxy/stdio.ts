@@ -163,34 +163,24 @@ export function createStdioProxy(
   // Hoisted so the exit handler can drain in-flight translations before exit.
   const serverQueue = createSerialQueue("server-queue");
 
-  function writeMessage(message: JsonRpcMessage): void {
+  function safeWrite(data: string): void {
     try {
-      process.stdout.write(JSON.stringify(message) + "\n");
+      process.stdout.write(data);
     } catch (err) {
-      // EPIPE if client closed stdout — log and continue rather than crash.
-      logger.warn(
-        `Failed to write to stdout: ${errorMessage(err)}`,
-      );
+      logger.warn(`Failed to write to stdout: ${errorMessage(err)}`);
     }
+  }
+
+  function writeMessage(message: JsonRpcMessage): void {
+    safeWrite(JSON.stringify(message) + "\n");
   }
 
   function writeRawLine(line: string): void {
-    try {
-      process.stdout.write(line + "\n");
-    } catch (err) {
-      logger.warn(
-        `Failed to write to stdout: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    safeWrite(line + "\n");
   }
 
   /** Translate a tools/call response, falling back to the original on error. */
-  async function handleToolCallResponse(msg: JsonRpcMessage, rawLine: string): Promise<void> {
-    if (msg.result === undefined) {
-      writeRawLine(rawLine);
-      return;
-    }
-
+  async function handleToolCallResponse(msg: JsonRpcMessage): Promise<void> {
     stats.requestCount += 1;
     const startTime = Date.now();
 
@@ -221,11 +211,7 @@ export function createStdioProxy(
   }
 
   /** Strip outputSchema from a tools/list response. */
-  function handleToolListResponse(msg: JsonRpcMessage, rawLine: string): void {
-    if (msg.result === undefined) {
-      writeRawLine(rawLine);
-      return;
-    }
+  function handleToolListResponse(msg: JsonRpcMessage): void {
     writeMessage({ ...msg, result: stripOutputSchemas(msg.result) });
   }
 
@@ -238,15 +224,17 @@ export function createStdioProxy(
     }
 
     const method = tracker.take(msg.id!);
-    switch (method) {
-      case "tools/call":
-        await handleToolCallResponse(msg, rawLine);
-        return;
-      case "tools/list":
-        handleToolListResponse(msg, rawLine);
-        return;
-      default:
-        writeRawLine(rawLine);
+
+    // Error responses (no result) and untracked methods pass through as-is.
+    if (msg.result === undefined || (method !== "tools/call" && method !== "tools/list")) {
+      writeRawLine(rawLine);
+      return;
+    }
+
+    if (method === "tools/call") {
+      await handleToolCallResponse(msg);
+    } else {
+      handleToolListResponse(msg);
     }
   }
 
@@ -313,17 +301,8 @@ export function createStdioProxy(
         try {
           await handleServerMessage(msg, line);
         } catch (err) {
-          logger.error(
-            `Error handling server message: ${errorMessage(err)}`,
-          );
-          // Forward original on error so the client still sees something.
-          try {
-            process.stdout.write(line + "\n");
-          } catch (writeErr) {
-            logger.warn(
-              `Failed to forward raw line: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`,
-            );
-          }
+          logger.error(`Error handling server message: ${errorMessage(err)}`);
+          writeRawLine(line);
         }
       });
     });
