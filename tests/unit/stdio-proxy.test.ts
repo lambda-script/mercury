@@ -154,7 +154,7 @@ describe("stdio proxy", () => {
     expect(messages[0].result).toEqual({ some: "data" });
   });
 
-  it("should silently drop malformed JSON lines from server", async () => {
+  it("should forward non-JSON lines from server to client", async () => {
     await createProxy();
 
     currentChild.mockStdout.write("this is not json\n");
@@ -163,10 +163,13 @@ describe("stdio proxy", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(getOutputMessages()).toHaveLength(0);
+    const rawOutput = stdoutWrites.map((w) => w.trim()).filter(Boolean);
+    expect(rawOutput).toHaveLength(2);
+    expect(rawOutput[0]).toBe("this is not json");
+    expect(rawOutput[1]).toBe("{malformed json");
   });
 
-  it("should drop non-object JSON values from server", async () => {
+  it("should forward non-object JSON values from server to client", async () => {
     await createProxy();
 
     currentChild.mockStdout.write("[1, 2, 3]\n");
@@ -174,7 +177,28 @@ describe("stdio proxy", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(getOutputMessages()).toHaveLength(0);
+    const rawOutput = stdoutWrites.map((w) => w.trim()).filter(Boolean);
+    expect(rawOutput).toHaveLength(2);
+    expect(rawOutput[0]).toBe("[1, 2, 3]");
+    expect(rawOutput[1]).toBe('"just a string"');
+  });
+
+  it("should forward non-JSON lines from client to child", async () => {
+    await createProxy();
+
+    const childStdinData: string[] = [];
+    currentChild.mockStdin.on("data", (chunk: Buffer) => {
+      childStdinData.push(chunk.toString());
+    });
+
+    mockStdin.write("this is not json\n");
+    mockStdin.write("{malformed\n");
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const combined = childStdinData.join("");
+    expect(combined).toContain("this is not json");
+    expect(combined).toContain("{malformed");
   });
 
   it("should strip outputSchema from tools/list responses", async () => {
@@ -655,6 +679,8 @@ describe("stdio proxy", () => {
   it("should compute exit code 128+signal when child is killed by signal", async () => {
     await createProxy();
 
+    // Simulate real behavior: stdout closes when child exits
+    currentChild.mockStdout.end();
     // Child killed by SIGTERM (signal 15 → exit code 143)
     currentChild.emit("exit", null, "SIGTERM");
     await new Promise((r) => setTimeout(r, 50));
@@ -665,6 +691,7 @@ describe("stdio proxy", () => {
   it("should use exit code 1 when child exits with no code and no signal", async () => {
     await createProxy();
 
+    currentChild.mockStdout.end();
     currentChild.emit("exit", null, null);
     await new Promise((r) => setTimeout(r, 50));
 
@@ -737,6 +764,10 @@ describe("stdio proxy", () => {
     );
     await new Promise((r) => setTimeout(r, 50));
 
+    // Simulate real behavior: stdout closes when child exits.
+    // drainAndExit waits for the server readline to close before draining
+    // the queue, so the test must end mockStdout to unblock the drain.
+    currentChild.mockStdout.end();
     // Child exits while translation is in-flight
     currentChild.emit("exit", 0, null);
     await new Promise((r) => setTimeout(r, 50));
