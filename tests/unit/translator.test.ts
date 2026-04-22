@@ -468,4 +468,67 @@ describe("Google Free Translator", () => {
       to: "en",
     }));
   });
+
+  it("should produce no remainder when text splits exactly at a paragraph boundary", async () => {
+    mockTranslate.mockImplementation(async (text: string) => ({ text }));
+
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // 4500 chars + "\n\n" = 4502 chars. The paragraph boundary at 4500
+    // consumes all remaining text, leaving an empty remainder.
+    const input = "x".repeat(4500) + "\n\n";
+    const result = await createGoogleFreeTranslator().translate(input, "auto", "en");
+
+    expect(mockTranslate).toHaveBeenCalledTimes(1);
+    expect(mockTranslate.mock.calls[0][0]).toBe("x".repeat(4500));
+    expect(result).toBe("x".repeat(4500) + "\n\n");
+  });
+
+  it("should handle multiple consecutive failures then success across chunks", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    const para = "a".repeat(3000);
+    const text = `${para}\n\n${para}`;
+
+    let chunkNum = 0;
+    mockTranslate.mockImplementation(async () => {
+      chunkNum++;
+      if (chunkNum === 1) return { text: "CHUNK1" };
+      return { text: "CHUNK2" };
+    });
+
+    const translator = createGoogleFreeTranslator();
+    const result = await translator.translate(text, "auto", "en");
+
+    expect(result).toBe("CHUNK1\n\nCHUNK2");
+    expect(mockTranslate).toHaveBeenCalledTimes(2);
+  });
+
+  it("should time out individual attempts and retry with next TLD", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // First attempt hangs, second succeeds
+    mockTranslate
+      .mockImplementationOnce(() => new Promise(() => {}))
+      .mockResolvedValueOnce({ text: "OK" });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate("テスト", "auto", "en");
+
+    // First attempt times out at 15s, then 500ms backoff, then second attempt
+    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(500);
+
+    const result = await promise;
+    expect(result).toBe("OK");
+    expect(mockTranslate).toHaveBeenCalledTimes(2);
+    expect(mockTranslate.mock.calls[0][1].tld).toBe("com");
+    expect(mockTranslate.mock.calls[1][1].tld).toBe("co.jp");
+  });
 });

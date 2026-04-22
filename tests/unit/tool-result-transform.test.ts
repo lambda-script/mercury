@@ -670,6 +670,144 @@ describe("transformToolResult", () => {
     expect(transformed.content[0].text).toBe(wsText);
     expect(stats.blocksSkipped).toBe(1);
   });
+
+  it("should keep detectedLang null when detector returns confidence 0", async () => {
+    const detector: Detector = {
+      detect: vi.fn(() => ({ lang: "und", confidence: 0 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    const result = {
+      content: [{ type: "text" as const, text: "テスト文です" }],
+    };
+
+    const { stats } = await transformToolResult(
+      result,
+      detector,
+      createMockTranslator(),
+      "en",
+    );
+
+    expect(stats.detectedLang).toBeNull();
+    expect(stats.blocksTranslated).toBe(1);
+  });
+
+  it("should set detectedLang from first block and skip detection for subsequent blocks", async () => {
+    const detector: Detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    const result = {
+      content: [
+        { type: "text" as const, text: "最初のブロック" },
+        { type: "text" as const, text: "二番目のブロック" },
+        { type: "text" as const, text: "三番目のブロック" },
+      ],
+    };
+
+    const { stats } = await transformToolResult(
+      result,
+      detector,
+      createMockTranslator(),
+      "en",
+    );
+
+    expect(stats.detectedLang).toBe("jpn");
+    expect(stats.blocksTranslated).toBe(3);
+    expect(detector.detect).toHaveBeenCalledTimes(1);
+  });
+
+  it("should pass through resource content blocks unchanged", async () => {
+    const resource = { uri: "file:///test.txt", mimeType: "text/plain", text: "内容" };
+    const result = {
+      content: [
+        { type: "resource" as const, resource },
+        { type: "text" as const, text: "翻訳するテキスト" },
+      ],
+    };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0]).toEqual({ type: "resource", resource });
+    expect(transformed.content[1].text).toBe("[EN] 翻訳するテキスト");
+    expect(stats.blocksTranslated).toBe(1);
+  });
+
+  it("should translate nested JSON objects and arrays concurrently", async () => {
+    const longJa1 = "これは最初のネストされた日本語テキストです。翻訳が必要です。";
+    const longJa2 = "二番目のネストされた日本語テキストです。これも翻訳されます。";
+    const jsonText = JSON.stringify({
+      data: {
+        items: [
+          { id: 1, description: longJa1 },
+          { id: 2, description: longJa2 },
+        ],
+        metadata: { count: 2 },
+      },
+    });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.data.items[0].description).toBe(`[EN] ${longJa1}`);
+    expect(parsed.data.items[1].description).toBe(`[EN] ${longJa2}`);
+    expect(parsed.data.metadata.count).toBe(2);
+    expect(stats.blocksTranslated).toBe(2);
+  });
+
+  it("should return same JSON array reference when no elements change", async () => {
+    const jsonText = JSON.stringify([
+      { id: 1, name: "short" },
+      { id: 2, url: "https://example.com/path" },
+    ]);
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const translator = createMockTranslator();
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0].text).toBe(jsonText);
+    expect(translator.translate).not.toHaveBeenCalled();
+  });
+
+  it("should handle primitive result types (string, number)", async () => {
+    const translator = createMockTranslator();
+
+    const { content: c1 } = await transformToolResult(
+      "raw string",
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+    expect(c1).toBe("raw string");
+
+    const { content: c2 } = await transformToolResult(
+      42,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+    expect(c2).toBe(42);
+
+    expect(translator.translate).not.toHaveBeenCalled();
+  });
 });
 
 describe("formatTransformStats", () => {

@@ -124,4 +124,64 @@ describe("FrancDetector", () => {
       expect(result.confidence).toBe(0);
     });
   });
+
+  describe("script-based detection for non-Latin scripts", () => {
+    const shortDetector = createFrancDetector(1000);
+
+    it("should detect Arabic script", () => {
+      const result = shortDetector.detect("مرحبا بالعالم");
+      expect(result.lang).toBe("ara");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should detect Devanagari as Hindi", () => {
+      const result = shortDetector.detect("नमस्ते दुनिया");
+      expect(result.lang).toBe("hin");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should detect Bengali script", () => {
+      const result = shortDetector.detect("হ্যালো বিশ্ব");
+      expect(result.lang).toBe("ben");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should detect Thai script", () => {
+      const result = shortDetector.detect("สวัสดีชาวโลก");
+      expect(result.lang).toBe("tha");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should detect Cyrillic as Russian", () => {
+      const result = shortDetector.detect("Привет мир");
+      expect(result.lang).toBe("rus");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should detect Hangul as Korean", () => {
+      const result = shortDetector.detect("안녕하세요");
+      expect(result.lang).toBe("kor");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should detect CJK without kana as Chinese", () => {
+      const result = shortDetector.detect("你好世界");
+      expect(result.lang).toBe("cmn");
+      expect(result.confidence).toBe(1);
+    });
+  });
+
+  describe("isTargetLang with ISO 639-1 codes", () => {
+    it("should convert 2-letter code to 3-letter for comparison", () => {
+      expect(
+        detector.isTargetLang("This is a test text in English for language detection.", "en"),
+      ).toBe(true);
+    });
+
+    it("should detect non-target when using 2-letter code", () => {
+      expect(
+        detector.isTargetLang("これは日本語のテストテキストです。翻訳が必要です。", "en"),
+      ).toBe(false);
+    });
+  });
 });
