@@ -238,6 +238,7 @@ src/
 └── utils/
     ├── logger.ts         # Logging utility
     ├── lang.ts           # Language name mappings
+    ├── strings.ts        # String helpers (whitespace-skipping index)
     └── tokens.ts         # Unicode script-based token estimation
 ```
 
