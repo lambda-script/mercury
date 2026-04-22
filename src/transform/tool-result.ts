@@ -56,8 +56,8 @@ const URL_PATTERN = /^https?:\/\//;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}/;
 
 // Heuristic: does the text look like a markdown code block?
-function isCodeBlock(text: string): boolean {
-  return text.startsWith("```", firstNonWsIndex(text));
+function isCodeBlock(text: string, wsIdx?: number): boolean {
+  return text.startsWith("```", wsIdx ?? firstNonWsIndex(text));
 }
 
 /**
@@ -67,9 +67,9 @@ function isCodeBlock(text: string): boolean {
  * starting with `{`/`[`, or `JSON.parse` threw). The wrapper distinguishes
  * "parse failed" from "parsed value happens to be falsy".
  */
-function tryParseJsonObject(text: string): { value: unknown } | null {
+function tryParseJsonObject(text: string, wsIdx?: number): { value: unknown } | null {
   if (text.length > MAX_JSON_CHECK_BYTES) return null;
-  const idx = firstNonWsIndex(text);
+  const idx = wsIdx ?? firstNonWsIndex(text);
   const ch = text.charCodeAt(idx);
   // Only attempt parse on '{' (0x7B) or '[' (0x5B); skips primitives & garbage.
   if (ch !== 0x7b && ch !== 0x5b) return null;
@@ -189,23 +189,24 @@ async function translateJsonStrings(
   }
 
   if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value);
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj);
     const translatedValues = await Promise.all(
-      entries.map(([, val]) =>
-        translateJsonStrings(val, detector, translator, targetLang, stats, depth + 1),
+      keys.map((key) =>
+        translateJsonStrings(obj[key], detector, translator, targetLang, stats, depth + 1),
       ),
     );
     let changed = false;
-    for (let i = 0; i < entries.length; i++) {
-      if (translatedValues[i] !== entries[i][1]) {
+    for (let i = 0; i < keys.length; i++) {
+      if (translatedValues[i] !== obj[keys[i]]) {
         changed = true;
         break;
       }
     }
     if (!changed) return value;
     const result: Record<string, unknown> = {};
-    for (let i = 0; i < entries.length; i++) {
-      result[entries[i][0]] = translatedValues[i];
+    for (let i = 0; i < keys.length; i++) {
+      result[keys[i]] = translatedValues[i];
     }
     return result;
   }
@@ -243,15 +244,17 @@ async function translateText(
   targetLang: string,
   stats: StatsAccumulator,
 ): Promise<string> {
+  const wsIdx = firstNonWsIndex(text);
+
   // Skip markdown code blocks
-  if (isCodeBlock(text)) {
+  if (isCodeBlock(text, wsIdx)) {
     logger.debug(`Skipping code block (${text.length} chars)`);
     stats.blocksSkipped += 1;
     return text;
   }
 
   // JSON content: translate string values inside the structure
-  const parsed = tryParseJsonObject(text);
+  const parsed = tryParseJsonObject(text, wsIdx);
   if (parsed !== null) {
     logger.debug(`Translating strings inside JSON block (${text.length} chars)`);
     const blocksBefore = stats.blocksTranslated;

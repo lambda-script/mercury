@@ -44,6 +44,8 @@ export function createFrancDetector(minLength: number): Detector {
   // are called on the same text (common in tool-result transform).
   let cachedText: string | null = null;
   let cachedResult: DetectResult | null = null;
+  let cachedTargetLang: string | null = null;
+  let cachedTarget3: string | null = null;
 
   return {
     detect(text: string): DetectResult {
@@ -78,10 +80,13 @@ export function createFrancDetector(minLength: number): Detector {
     },
 
     isTargetLang(text: string, targetLang: string): boolean {
-      const target3 = toIso3(targetLang);
+      if (targetLang !== cachedTargetLang) {
+        cachedTargetLang = targetLang;
+        cachedTarget3 = toIso3(targetLang);
+      }
       const result = this.detect(text);
       if (result.confidence === 0) return true;
-      return result.lang === target3;
+      return result.lang === cachedTarget3;
     },
   };
 }
