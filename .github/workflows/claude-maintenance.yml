@@ -1,8 +1,6 @@
 name: Claude Maintenance
 
 on:
-  schedule:
-    - cron: '0 0 * * *'  # Daily at UTC 0:00 (JST 9:00)
   workflow_dispatch:
 
 jobs:
