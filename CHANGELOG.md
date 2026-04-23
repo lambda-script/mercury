@@ -1,5 +1,52 @@
 # Changelog
 
+## [2.0.1](https://github.com/lambda-script/mercury/compare/mercury-v2.0.0...mercury-v2.0.1) (2026-04-23)
+
+
+### Bug Fixes
+
+* **config:** validate MERCURY_MIN_DETECT_LENGTH is a positive integer ([#49](https://github.com/lambda-script/mercury/issues/49)) ([11ce728](https://github.com/lambda-script/mercury/commit/11ce728cb559254ac584284a7b40b6e7c399aac2))
+* **deps:** regenerate package-lock.json to fix CI ([#63](https://github.com/lambda-script/mercury/issues/63)) ([5e001d6](https://github.com/lambda-script/mercury/commit/5e001d65acb3bf6c4553c5c2b6ab7118752ec6c6))
+* **proxy:** forward non-JSON lines and fix drain race on child exit ([#113](https://github.com/lambda-script/mercury/issues/113)) ([53300cb](https://github.com/lambda-script/mercury/commit/53300cb39fc3369cd88b2021976ce75cc7ad294a))
+* **proxy:** handle EPIPE and stream errors without crashing ([#42](https://github.com/lambda-script/mercury/issues/42)) ([3d1799a](https://github.com/lambda-script/mercury/commit/3d1799a7e322491cb6b7e8bbacf1154830af897e))
+* **proxy:** harden shutdown and error handling for edge cases ([#98](https://github.com/lambda-script/mercury/issues/98)) ([1466fb5](https://github.com/lambda-script/mercury/commit/1466fb566c4e0e9bbdd4ab64a41ebacee68bb8b2))
+* **translator:** add per-attempt timeout to prevent indefinite hangs ([#59](https://github.com/lambda-script/mercury/issues/59)) ([ea17642](https://github.com/lambda-script/mercury/commit/ea17642ce8cf4f543e38b2b5a4afad283b7a015b))
+* **translator:** preserve boundary chars when chunking large text ([#60](https://github.com/lambda-script/mercury/issues/60)) ([a31125c](https://github.com/lambda-script/mercury/commit/a31125c71e9f8b3c081259e9459e15afb83d951a))
+* **translator:** preserve surrogate pairs when hard-splitting chunks ([#51](https://github.com/lambda-script/mercury/issues/51)) ([de55a3e](https://github.com/lambda-script/mercury/commit/de55a3e3f661c91e89f2fd7f8bdeb3f4308b898b))
+
+
+### Performance Improvements
+
+* reduce allocations in hot paths ([#107](https://github.com/lambda-script/mercury/issues/107)) ([12bdb6b](https://github.com/lambda-script/mercury/commit/12bdb6ba37c805e3cbfd87a50a68deecfeb3b3d4))
+* reduce allocations in stdio proxy, JSON walker, and detector ([#92](https://github.com/lambda-script/mercury/issues/92)) ([7ac460f](https://github.com/lambda-script/mercury/commit/7ac460f1fc87db6eb097429ee537649f543607f1))
+* **transform:** skip JSON re-stringify when no strings were translated ([#61](https://github.com/lambda-script/mercury/issues/61)) ([6f838fb](https://github.com/lambda-script/mercury/commit/6f838fb305a6b070a8d34a59fc5aaacc3370c9ee))
+
+
+### Code Refactoring
+
+* extract shared helpers and parallelize text block translation ([#95](https://github.com/lambda-script/mercury/issues/95)) ([d10f28e](https://github.com/lambda-script/mercury/commit/d10f28e373a220da1701def5d93a2247b0490c23))
+* **proxy:** deduplicate error handling and centralize response guard ([#111](https://github.com/lambda-script/mercury/issues/111)) ([500d8b4](https://github.com/lambda-script/mercury/commit/500d8b4f4579bf8acfc732f7a6a2254e2369e800))
+* **transform:** parallelize JSON object walker and tighten types ([#58](https://github.com/lambda-script/mercury/issues/58)) ([24a2327](https://github.com/lambda-script/mercury/commit/24a23277841c03475417252bcb017c08583b3116))
+
+
+### Documentation
+
+* add missing JSDoc and MERCURY_HAIKU_MODEL to --help ([#97](https://github.com/lambda-script/mercury/issues/97)) ([66c42c7](https://github.com/lambda-script/mercury/commit/66c42c7ebf659ca9da7fe65cebd5666a89045e11))
+* add missing strings.ts to README architecture tree ([#112](https://github.com/lambda-script/mercury/issues/112)) ([cebdf25](https://github.com/lambda-script/mercury/commit/cebdf25bc4746143418548952d6495d3d1d3e063))
+* clarify docs and error messages for new contributors ([#57](https://github.com/lambda-script/mercury/issues/57)) ([d31a9cb](https://github.com/lambda-script/mercury/commit/d31a9cba05e1d682e63e63e4af9f31eb71c615d6))
+
+
+### Tests
+
+* add edge-case tests and boost coverage from 92% to 97% ([#96](https://github.com/lambda-script/mercury/issues/96)) ([29381ab](https://github.com/lambda-script/mercury/commit/29381ab6abfdc482f3f3241184ec2e0497dd21f7))
+* add edge-case tests and boost coverage from 97% to 98% ([#108](https://github.com/lambda-script/mercury/issues/108)) ([df15a27](https://github.com/lambda-script/mercury/commit/df15a27f11be047368ac7cc114cb4c1452a693da))
+* expand edge-case coverage for proxy, transform, and translators ([#55](https://github.com/lambda-script/mercury/issues/55)) ([2364bc9](https://github.com/lambda-script/mercury/commit/2364bc94a9ab0cb3da5ab46329d58383db59d05e))
+
+
+### CI/CD
+
+* remove daily schedule from claude-maintenance ([#114](https://github.com/lambda-script/mercury/issues/114)) ([d4ae443](https://github.com/lambda-script/mercury/commit/d4ae443f31f7ea6be106f7e010bba6d3109ca781))
+
 ## [2.0.0](https://github.com/lambda-script/mercury/compare/mercury-v1.0.1...mercury-v2.0.0) (2026-04-06)
 
 
