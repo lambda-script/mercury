@@ -183,18 +183,13 @@ export function createStdioProxy(
       process.stdout.write(line + "\n");
     } catch (err) {
       logger.warn(
-        `Failed to write to stdout: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to write to stdout: ${errorMessage(err)}`,
       );
     }
   }
 
   /** Translate a tools/call response, falling back to the original on error. */
-  async function handleToolCallResponse(msg: JsonRpcMessage, rawLine: string): Promise<void> {
-    if (msg.result === undefined) {
-      writeRawLine(rawLine);
-      return;
-    }
-
+  async function handleToolCallResponse(msg: JsonRpcMessage): Promise<void> {
     stats.requestCount += 1;
     const startTime = Date.now();
 
@@ -225,11 +220,7 @@ export function createStdioProxy(
   }
 
   /** Strip outputSchema from a tools/list response. */
-  function handleToolListResponse(msg: JsonRpcMessage, rawLine: string): void {
-    if (msg.result === undefined) {
-      writeRawLine(rawLine);
-      return;
-    }
+  function handleToolListResponse(msg: JsonRpcMessage): void {
     writeMessage({ ...msg, result: stripOutputSchemas(msg.result) });
   }
 
@@ -242,12 +233,18 @@ export function createStdioProxy(
     }
 
     const method = tracker.take(msg.id!);
+
+    if (msg.result === undefined) {
+      writeRawLine(rawLine);
+      return;
+    }
+
     switch (method) {
       case "tools/call":
-        await handleToolCallResponse(msg, rawLine);
+        await handleToolCallResponse(msg);
         return;
       case "tools/list":
-        handleToolListResponse(msg, rawLine);
+        handleToolListResponse(msg);
         return;
       default:
         writeRawLine(rawLine);
@@ -338,14 +335,7 @@ export function createStdioProxy(
           logger.error(
             `Error handling server message: ${errorMessage(err)}`,
           );
-          // Forward original on error so the client still sees something.
-          try {
-            process.stdout.write(line + "\n");
-          } catch (writeErr) {
-            logger.warn(
-              `Failed to forward raw line: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`,
-            );
-          }
+          writeRawLine(line);
         }
       });
     });
