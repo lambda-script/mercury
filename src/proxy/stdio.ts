@@ -167,25 +167,20 @@ export function createStdioProxy(
   // before readline has processed remaining stdout data.
   let serverReaderClosed: Promise<void> = Promise.resolve();
 
-  function writeMessage(message: JsonRpcMessage): void {
+  function safeStdoutWrite(data: string): void {
     try {
-      process.stdout.write(JSON.stringify(message) + "\n");
+      process.stdout.write(data + "\n");
     } catch (err) {
-      // EPIPE if client closed stdout — log and continue rather than crash.
-      logger.warn(
-        `Failed to write to stdout: ${errorMessage(err)}`,
-      );
+      logger.warn(`Failed to write to stdout: ${errorMessage(err)}`);
     }
   }
 
+  function writeMessage(message: JsonRpcMessage): void {
+    safeStdoutWrite(JSON.stringify(message));
+  }
+
   function writeRawLine(line: string): void {
-    try {
-      process.stdout.write(line + "\n");
-    } catch (err) {
-      logger.warn(
-        `Failed to write to stdout: ${errorMessage(err)}`,
-      );
-    }
+    safeStdoutWrite(line);
   }
 
   /** Translate a tools/call response, falling back to the original on error. */
@@ -251,19 +246,34 @@ export function createStdioProxy(
     }
   }
 
+  function safeChildWrite(childStdin: NodeJS.WritableStream, data: string): void {
+    try {
+      childStdin.write(data + "\n");
+    } catch (err) {
+      logger.warn(`Failed to write to child stdin: ${errorMessage(err)}`);
+    }
+  }
+
   function handleClientMessage(msg: JsonRpcMessage, rawLine: string, childStdin: NodeJS.WritableStream): void {
     if (msg.id !== undefined && msg.method !== undefined) {
       if (msg.method === "tools/call" || msg.method === "tools/list") {
         tracker.track(msg.id, msg.method);
       }
     }
-    try {
-      childStdin.write(rawLine + "\n");
-    } catch (err) {
-      logger.warn(
-        `Failed to write to child stdin: ${errorMessage(err)}`,
-      );
-    }
+    safeChildWrite(childStdin, rawLine);
+  }
+
+  function scheduleForceKill(child: ChildProcess, reason: string): void {
+    const timer = setTimeout(() => {
+      logger.warn(`${reason}, force killing`);
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // Child already dead
+      }
+    }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
+    timer.unref();
+    child.once("exit", () => clearTimeout(timer));
   }
 
   /** Setup stream from client (stdin) to child process. */
@@ -275,36 +285,18 @@ export function createStdioProxy(
       logger.warn(`Client readline error: ${err.message}`);
     });
     clientReader.on("line", (line) => {
+      if (!child.stdin) return;
       const msg = parseJsonRpcLine(line);
       if (msg) {
-        if (child.stdin) {
-          handleClientMessage(msg, line, child.stdin);
-        }
-      } else if (child.stdin && firstNonWsIndex(line) < line.length) {
-        try {
-          child.stdin.write(line + "\n");
-        } catch (err) {
-          logger.warn(
-            `Failed to write to child stdin: ${errorMessage(err)}`,
-          );
-        }
+        handleClientMessage(msg, line, child.stdin);
+      } else if (firstNonWsIndex(line) < line.length) {
+        safeChildWrite(child.stdin, line);
       }
     });
 
-    // When our stdin ends the client is gone — close child stdin and
-    // schedule a force-kill in case the child ignores the EOF.
     process.stdin.on("end", () => {
       child.stdin?.end();
-      const eofKillTimer = setTimeout(() => {
-        logger.warn("Child did not exit after stdin EOF, force killing");
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // Child already dead
-        }
-      }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
-      eofKillTimer.unref();
-      child.once("exit", () => clearTimeout(eofKillTimer));
+      scheduleForceKill(child, "Child did not exit after stdin EOF");
     });
   }
 
@@ -388,26 +380,13 @@ export function createStdioProxy(
 
       logger.info(`Received ${sig}, attempting graceful shutdown...`);
 
-      // Forward signal to child so it can shut down gracefully.
       try {
         child.kill(sig);
       } catch {
         // Child may already be dead.
       }
       child.stdin?.end();
-
-      // Force kill if child does not exit in time.
-      const forceKillTimer = setTimeout(() => {
-        logger.warn(
-          `Child did not exit after ${GRACEFUL_SHUTDOWN_TIMEOUT_MS}ms, force killing...`,
-        );
-        child.kill("SIGKILL");
-      }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
-      forceKillTimer.unref();
-
-      child.once("exit", () => {
-        clearTimeout(forceKillTimer);
-      });
+      scheduleForceKill(child, `Child did not exit after ${GRACEFUL_SHUTDOWN_TIMEOUT_MS}ms`);
     };
 
     process.once("SIGINT", () => shutdown("SIGINT"));
