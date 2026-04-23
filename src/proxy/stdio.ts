@@ -18,26 +18,20 @@ export interface JsonRpcMessage {
   readonly error?: unknown;
 }
 
-function isValidJsonRpcMessage(value: unknown): value is JsonRpcMessage {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /**
  * Parse a line of text as JSON-RPC message.
  * Returns null if invalid or not a valid JSON-RPC message.
  */
 function parseJsonRpcLine(line: string): JsonRpcMessage | null {
-  if (firstNonWsIndex(line) === line.length) return null;
+  const idx = firstNonWsIndex(line);
+  if (idx === line.length) return null;
+  // JSON-RPC messages are always objects; skip JSON.parse + exception
+  // overhead for lines that cannot be objects.
+  if (line.charCodeAt(idx) !== 0x7b /* { */) return null;
 
   try {
-    const parsed = JSON.parse(line) as unknown;
-    if (!isValidJsonRpcMessage(parsed)) {
-      logger.debug("Non-object JSON, dropping");
-      return null;
-    }
-    return parsed;
+    return JSON.parse(line) as JsonRpcMessage;
   } catch {
-    logger.debug("Non-JSON line, dropping");
     return null;
   }
 }

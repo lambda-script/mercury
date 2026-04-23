@@ -24,32 +24,63 @@ export function estimateTokens(text: string): number {
     const cp = text.charCodeAt(i);
 
     if (cp < 0x0400) {
-      // Latin/ASCII run: scan ahead and multiply once instead of
-      // incrementing 0.25 per iteration.
       let j = i + 1;
       while (j < len && text.charCodeAt(j) < 0x0400) j++;
       tokens += (j - i) * 0.25;
       i = j;
     } else if (
-      (cp >= 0x4e00 && cp <= 0x9fff) || // CJK Unified Ideographs
-      (cp >= 0x3040 && cp <= 0x309f) || // Hiragana
-      (cp >= 0x30a0 && cp <= 0x30ff) || // Katakana
-      (cp >= 0xac00 && cp <= 0xd7af)    // Hangul Syllables
+      (cp >= 0x4e00 && cp <= 0x9fff) ||
+      (cp >= 0x3040 && cp <= 0x309f) ||
+      (cp >= 0x30a0 && cp <= 0x30ff) ||
+      (cp >= 0xac00 && cp <= 0xd7af)
     ) {
-      tokens += 1.5;
-      i++;
+      let j = i + 1;
+      while (j < len) {
+        const c = text.charCodeAt(j);
+        if ((c >= 0x4e00 && c <= 0x9fff) ||
+            (c >= 0x3040 && c <= 0x309f) ||
+            (c >= 0x30a0 && c <= 0x30ff) ||
+            (c >= 0xac00 && c <= 0xd7af)) j++;
+        else break;
+      }
+      tokens += (j - i) * 1.5;
+      i = j;
     } else if (cp <= 0x04ff) {
-      tokens += 0.5;
-      i++;
+      let j = i + 1;
+      while (j < len) {
+        const c = text.charCodeAt(j);
+        if (c >= 0x0400 && c <= 0x04ff) j++;
+        else break;
+      }
+      tokens += (j - i) * 0.5;
+      i = j;
     } else if (cp >= 0x0600 && cp <= 0x06ff) {
-      tokens += 1.2;
-      i++;
+      let j = i + 1;
+      while (j < len) {
+        const c = text.charCodeAt(j);
+        if (c >= 0x0600 && c <= 0x06ff) j++;
+        else break;
+      }
+      tokens += (j - i) * 1.2;
+      i = j;
     } else if (cp >= 0x0900 && cp <= 0x09ff) {
-      tokens += 1.5;
-      i++;
+      let j = i + 1;
+      while (j < len) {
+        const c = text.charCodeAt(j);
+        if (c >= 0x0900 && c <= 0x09ff) j++;
+        else break;
+      }
+      tokens += (j - i) * 1.5;
+      i = j;
     } else if (cp >= 0x0e00 && cp <= 0x0e7f) {
-      tokens += 1.0;
-      i++;
+      let j = i + 1;
+      while (j < len) {
+        const c = text.charCodeAt(j);
+        if (c >= 0x0e00 && c <= 0x0e7f) j++;
+        else break;
+      }
+      tokens += (j - i) * 1.0;
+      i = j;
     } else {
       tokens += 0.25;
       i++;
