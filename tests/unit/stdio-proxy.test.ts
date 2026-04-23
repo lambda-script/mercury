@@ -1046,4 +1046,209 @@ describe("stdio proxy", () => {
     expect(stripOutputSchemas("string")).toBe("string");
     expect(stripOutputSchemas({ other: "field" })).toEqual({ other: "field" });
   });
+
+  it("should not crash when forwarding non-JSON line to child stdin that throws", async () => {
+    await createProxy();
+
+    currentChild.mockStdin.write = vi.fn(() => {
+      throw new Error("EPIPE");
+    }) as unknown as typeof currentChild.mockStdin.write;
+
+    // Non-JSON, non-empty line triggers the non-JSON forwarding path
+    mockStdin.write("this is not json at all\n");
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Proxy should survive the write error
+    const { logger: mockLogger } = await import("../../src/utils/logger.js");
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Failed to write to child stdin"),
+    );
+  });
+
+  it("should handle rapid alternating tools/call and notification messages", async () => {
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    const translator = {
+      translate: vi.fn(async () => "Translated"),
+    };
+
+    const proxy = await createProxy(detector, translator);
+
+    // Interleave notifications and tool calls from client
+    mockStdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {} }) + "\n");
+    mockStdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/progress", params: {} }) + "\n");
+    mockStdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: {} }) + "\n");
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Server sends a notification between two tool call responses
+    currentChild.mockStdout.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "テスト" }] } }) + "\n",
+    );
+    currentChild.mockStdout.write(
+      JSON.stringify({ jsonrpc: "2.0", method: "notifications/status", params: { ok: true } }) + "\n",
+    );
+    currentChild.mockStdout.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: "テスト2" }] } }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 200));
+
+    const messages = getOutputMessages();
+    // All three messages should arrive in order: response, notification, response
+    expect(messages).toHaveLength(3);
+    expect(messages[0].id).toBe(1);
+    expect((messages[0].result as { content: { text: string }[] }).content[0].text).toBe("Translated");
+    expect(messages[1].method).toBe("notifications/status");
+    expect(messages[2].id).toBe(2);
+    expect(proxy.stats.toolCallsTranslated).toBe(2);
+  });
+
+  it("should handle child exit during in-flight translation with force drain timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      // Translation that never resolves — simulates a hung translator
+      const translator = {
+        translate: vi.fn(() => new Promise<string>(() => {})),
+      };
+      const detector = {
+        detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+        isTargetLang: vi.fn(() => false),
+      };
+
+      await createProxy(detector, translator);
+
+      mockStdin.write(
+        JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {} }) + "\n",
+      );
+      await vi.advanceTimersByTimeAsync(50);
+
+      currentChild.mockStdout.write(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: { content: [{ type: "text", text: "テスト" }] },
+        }) + "\n",
+      );
+      await vi.advanceTimersByTimeAsync(50);
+
+      // Close stdout and fire exit — drainAndExit starts
+      currentChild.mockStdout.end();
+      currentChild.emit("exit", 0, null);
+      await vi.advanceTimersByTimeAsync(100);
+
+      // Translation is still hung — process.exit not called yet
+      expect(process.exit).not.toHaveBeenCalled();
+
+      // Advance past the 5s drain timeout
+      await vi.advanceTimersByTimeAsync(5001);
+
+      // Force exit should have been triggered by the drain timeout
+      expect(process.exit).toHaveBeenCalledWith(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should handle stdout write failure when forwarding raw server line", async () => {
+    await createProxy();
+
+    // Make stdout.write throw (simulates EPIPE from closed client)
+    process.stdout.write = vi.fn(() => {
+      throw new Error("EPIPE");
+    }) as unknown as typeof process.stdout.write;
+
+    // Send a non-JSON line from server — uses writeRawLine path
+    currentChild.mockStdout.write("raw server output line\n");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const { logger: mockLogger } = await import("../../src/utils/logger.js");
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Failed to write to stdout"),
+    );
+  });
+
+  it("should handle stdout write failure when forwarding server notification", async () => {
+    await createProxy();
+
+    process.stdout.write = vi.fn(() => {
+      throw new Error("EPIPE");
+    }) as unknown as typeof process.stdout.write;
+
+    // Notification from server — uses writeRawLine path
+    currentChild.mockStdout.write(
+      JSON.stringify({ jsonrpc: "2.0", method: "notifications/progress", params: { progress: 50 } }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Proxy should not crash
+    const { logger: mockLogger } = await import("../../src/utils/logger.js");
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Failed to write to stdout"),
+    );
+  });
+
+  it("should handle whitespace-only lines from server without forwarding", async () => {
+    await createProxy();
+
+    currentChild.mockStdout.write("   \n");
+    currentChild.mockStdout.write("\t\n");
+    currentChild.mockStdout.write("  \t  \n");
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Whitespace-only lines should be dropped (not forwarded)
+    const rawOutput = stdoutWrites.map((w) => w.trim()).filter(Boolean);
+    expect(rawOutput).toHaveLength(0);
+  });
+
+  it("should handle whitespace-only lines from client without forwarding", async () => {
+    await createProxy();
+
+    const childStdinData: string[] = [];
+    currentChild.mockStdin.on("data", (chunk: Buffer) => {
+      childStdinData.push(chunk.toString());
+    });
+
+    // parseJsonRpcLine returns null for whitespace, and firstNonWsIndex === line.length
+    // so the non-JSON forwarding branch is also skipped
+    mockStdin.write("   \n");
+    mockStdin.write("\t\n");
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Nothing should have been forwarded to child
+    expect(childStdinData.join("")).toBe("");
+  });
+
+  it("should handle tools/call with image-only content (no translation needed)", async () => {
+    const detector = {
+      detect: vi.fn(() => ({ lang: "eng", confidence: 1 })),
+      isTargetLang: vi.fn(() => true),
+    };
+    const translator = {
+      translate: vi.fn(async (text: string) => text),
+    };
+
+    const proxy = await createProxy(detector, translator);
+
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 40, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 40,
+        result: {
+          content: [{ type: "image", data: "iVBOR...", mimeType: "image/png" }],
+        },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(translator.translate).not.toHaveBeenCalled();
+    expect(proxy.stats.toolCallsPassedThrough).toBe(1);
+  });
 });

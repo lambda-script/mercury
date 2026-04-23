@@ -837,6 +837,192 @@ describe("transformToolResult", () => {
     );
     expect(c2).toBe(42);
   });
+
+  it("should translate JSON array where some elements change and some don't", async () => {
+    const longJa = "これは長い日本語のテキストです。翻訳されるべきです。";
+    const jsonText = JSON.stringify(["short", longJa, 42, longJa]);
+    const result = {
+      content: [{ type: "text" as const, text: jsonText }],
+    };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed[0]).toBe("short");
+    expect(parsed[1]).toBe(`[EN] ${longJa}`);
+    expect(parsed[2]).toBe(42);
+    expect(parsed[3]).toBe(`[EN] ${longJa}`);
+    expect(stats.blocksTranslated).toBe(2);
+  });
+
+  it("should handle JSON with leading whitespace before opening brace", async () => {
+    const longJa = "これは長い日本語のテキストです。翻訳されるべきです。";
+    const jsonText = "   \n  " + JSON.stringify({ body: longJa });
+    const result = {
+      content: [{ type: "text" as const, text: jsonText }],
+    };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.body).toBe(`[EN] ${longJa}`);
+    expect(stats.blocksTranslated).toBe(1);
+  });
+
+  it("should handle code block with leading whitespace", async () => {
+    const codeText = "  \t```python\nprint('hello')\n```";
+    const result = {
+      content: [{ type: "text" as const, text: codeText }],
+    };
+
+    const translator = createMockTranslator();
+    const { stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    expect(stats.blocksSkipped).toBe(1);
+    expect(translator.translate).not.toHaveBeenCalled();
+  });
+
+  it("should handle concurrent translation of multiple text blocks", async () => {
+    const callOrder: number[] = [];
+    let callIdx = 0;
+    const translator: Translator = {
+      translate: vi.fn(async (text: string) => {
+        const idx = callIdx++;
+        callOrder.push(idx);
+        await new Promise((r) => setTimeout(r, 10));
+        return `[${idx}] ${text}`;
+      }),
+    };
+
+    const result = {
+      content: [
+        { type: "text" as const, text: "ブロック一" },
+        { type: "text" as const, text: "ブロック二" },
+        { type: "text" as const, text: "ブロック三" },
+      ],
+    };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content).toHaveLength(3);
+    expect(stats.blocksTranslated).toBe(3);
+    // All three translations should have started (concurrent via Promise.all)
+    expect(callOrder).toEqual([0, 1, 2]);
+  });
+
+  it("should handle JSON object where no values changed (identity optimization)", async () => {
+    // Object with only structural/short strings — walker returns identical references
+    const jsonText = JSON.stringify({
+      url: "https://example.com/path",
+      path: "/usr/bin/some-tool",
+      id: "abc",
+      count: 42,
+    });
+    const result = {
+      content: [{ type: "text" as const, text: jsonText }],
+    };
+
+    const translator = createMockTranslator();
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    // Original text preserved (no JSON.stringify re-serialization)
+    expect(transformed.content[0].text).toBe(jsonText);
+    expect(translator.translate).not.toHaveBeenCalled();
+  });
+
+  it("should handle text that starts with [ but is not valid JSON", async () => {
+    const malformed = "[this is not json but starts with bracket and is long enough for translation";
+    const result = {
+      content: [{ type: "text" as const, text: malformed }],
+    };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0].text).toBe(`[EN] ${malformed}`);
+    expect(stats.blocksTranslated).toBe(1);
+  });
+
+  it("should handle deeply nested JSON arrays and objects mixed", async () => {
+    const longJa = "これは長い日本語のテキストです。翻訳されるべきです。";
+    const nested = {
+      items: [
+        { name: longJa, children: [{ desc: longJa }] },
+        { name: "short", children: [] },
+      ],
+    };
+    const jsonText = JSON.stringify(nested);
+    const result = {
+      content: [{ type: "text" as const, text: jsonText }],
+    };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    const parsed = JSON.parse(transformed.content[0].text);
+    expect(parsed.items[0].name).toBe(`[EN] ${longJa}`);
+    expect(parsed.items[0].children[0].desc).toBe(`[EN] ${longJa}`);
+    expect(parsed.items[1].name).toBe("short");
+    expect(stats.blocksTranslated).toBe(2);
+  });
+
+  it("should handle text that is not a code block but starts similarly", async () => {
+    // Triple backtick not at the start of content (after non-whitespace)
+    const text = "Some text before ``` not really a code block at all";
+    const result = {
+      content: [{ type: "text" as const, text }],
+    };
+
+    const translator = createMockTranslator();
+    const { stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    expect(stats.blocksTranslated).toBe(1);
+    expect(translator.translate).toHaveBeenCalled();
+  });
 });
 
 describe("formatTransformStats", () => {
