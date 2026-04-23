@@ -670,6 +670,173 @@ describe("transformToolResult", () => {
     expect(transformed.content[0].text).toBe(wsText);
     expect(stats.blocksSkipped).toBe(1);
   });
+
+  it("should keep detectedLang null when detector returns confidence 0", async () => {
+    const detector: Detector = {
+      detect: vi.fn(() => ({ lang: "und", confidence: 0 })),
+      isTargetLang: vi.fn(() => false),
+    };
+
+    const result = {
+      content: [{ type: "text" as const, text: "Some ambiguous text here" }],
+    };
+
+    const { stats } = await transformToolResult(
+      result,
+      detector,
+      createMockTranslator(),
+      "en",
+    );
+
+    expect(stats.blocksTranslated).toBe(1);
+    expect(stats.detectedLang).toBeNull();
+  });
+
+  it("should pass through resource content blocks unchanged", async () => {
+    const resource = {
+      uri: "file:///tmp/data.json",
+      mimeType: "application/json",
+      text: '{"key": "日本語のテキスト"}',
+    };
+    const result = {
+      content: [
+        { type: "resource" as const, resource },
+        { type: "text" as const, text: "テスト文" },
+      ],
+    };
+
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0]).toEqual({ type: "resource", resource });
+    expect(transformed.content[1].text).toBe("[EN] テスト文");
+  });
+
+  it("should set detectedLang only once across multiple text blocks", async () => {
+    const detector: Detector = {
+      detect: vi.fn()
+        .mockReturnValueOnce({ lang: "jpn", confidence: 1 })
+        .mockReturnValueOnce({ lang: "kor", confidence: 1 }),
+      isTargetLang: vi.fn(() => false),
+    };
+
+    const result = {
+      content: [
+        { type: "text" as const, text: "最初のブロック" },
+        { type: "text" as const, text: "두 번째 블록입니다" },
+      ],
+    };
+
+    const { stats } = await transformToolResult(
+      result,
+      detector,
+      createMockTranslator(),
+      "en",
+    );
+
+    expect(stats.detectedLang).toBe("jpn");
+    expect(stats.blocksTranslated).toBe(2);
+  });
+
+  it("should return original JSON array when no elements change", async () => {
+    const jsonText = JSON.stringify(["short", "ids", 42, true, null]);
+    const result = {
+      content: [{ type: "text" as const, text: jsonText }],
+    };
+
+    const translator = createMockTranslator();
+    const { content } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0].text).toBe(jsonText);
+    expect(translator.translate).not.toHaveBeenCalled();
+  });
+
+  it("should handle mixed content with code block, text, and image blocks", async () => {
+    const result = {
+      content: [
+        { type: "text" as const, text: "```js\nconsole.log('hi');\n```" },
+        { type: "image" as const, data: "base64==", mimeType: "image/png" },
+        { type: "text" as const, text: "翻訳すべきテキスト" },
+      ],
+    };
+
+    const translator = createMockTranslator();
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      translator,
+      "en",
+    );
+
+    const transformed = content as typeof result;
+    expect(transformed.content[0].text).toBe("```js\nconsole.log('hi');\n```");
+    expect(transformed.content[1]).toEqual({ type: "image", data: "base64==", mimeType: "image/png" });
+    expect(transformed.content[2].text).toBe("[EN] 翻訳すべきテキスト");
+    expect(stats.blocksSkipped).toBe(1);
+    expect(stats.blocksTranslated).toBe(1);
+  });
+
+  it("should handle JSON with nested objects containing translatable and structural strings", async () => {
+    const longJa = "これは非常に長い日本語テキストで翻訳が必要です。十分な長さです。";
+    const jsonText = JSON.stringify({
+      metadata: {
+        url: "https://example.com/api/v2/resource",
+        path: "/usr/local/bin/very-long-executable-name",
+        date: "2024-01-15T10:00:00Z long enough",
+      },
+      body: {
+        title: longJa,
+        nested: {
+          description: longJa,
+        },
+      },
+    });
+    const result = { content: [{ type: "text" as const, text: jsonText }] };
+
+    const { content, stats } = await transformToolResult(
+      result,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+
+    const parsed = JSON.parse((content as typeof result).content[0].text);
+    expect(parsed.metadata.url).toBe("https://example.com/api/v2/resource");
+    expect(parsed.metadata.path).toBe("/usr/local/bin/very-long-executable-name");
+    expect(parsed.body.title).toBe(`[EN] ${longJa}`);
+    expect(parsed.body.nested.description).toBe(`[EN] ${longJa}`);
+    expect(stats.blocksTranslated).toBe(2);
+  });
+
+  it("should handle non-object non-null result (e.g. string or number)", async () => {
+    const { content: c1, stats: s1 } = await transformToolResult(
+      "plain string",
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+    expect(c1).toBe("plain string");
+    expect(s1.blocksTranslated).toBe(0);
+
+    const { content: c2 } = await transformToolResult(
+      42,
+      createMockDetector(false),
+      createMockTranslator(),
+      "en",
+    );
+    expect(c2).toBe(42);
+  });
 });
 
 describe("formatTransformStats", () => {

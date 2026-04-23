@@ -172,4 +172,43 @@ describe("Haiku Translator", () => {
     const args = mockCreate.mock.calls[0][0] as { model: string };
     expect(args.model).toBe("custom-model-id");
   });
+
+  it("should throw a descriptive error when API returns empty content array", async () => {
+    const { createHaikuTranslator } = await import(
+      "../../src/translator/haiku.js"
+    );
+    mockCreate.mockResolvedValueOnce({
+      content: [],
+    });
+
+    const translator = createHaikuTranslator(
+      { type: "api_key", apiKey: "sk-test" },
+      "claude-haiku-4-5-20251001",
+    );
+
+    await expect(translator.translate("テスト", "auto", "en")).rejects.toThrow();
+  });
+
+  it("should handle large text input without truncation", async () => {
+    const { createHaikuTranslator } = await import(
+      "../../src/translator/haiku.js"
+    );
+    const largeText = "日本語のテキスト。".repeat(500);
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: "Translated large text" }],
+    });
+
+    const translator = createHaikuTranslator(
+      { type: "api_key", apiKey: "sk-test" },
+      "claude-haiku-4-5-20251001",
+    );
+
+    const result = await translator.translate(largeText, "auto", "en");
+    expect(result).toBe("Translated large text");
+
+    const args = mockCreate.mock.calls[0][0] as {
+      messages: { content: string }[];
+    };
+    expect(args.messages[0].content).toContain(largeText);
+  });
 });

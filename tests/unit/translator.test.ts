@@ -468,4 +468,116 @@ describe("Google Free Translator", () => {
       to: "en",
     }));
   });
+
+  it("should produce exactly one chunk for text at MAX_CHUNK_CHARS boundary", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    mockTranslate.mockImplementation(async (text: string) => ({ text }));
+
+    const translator = createGoogleFreeTranslator();
+    const input = "x".repeat(4500); // exactly MAX_CHUNK_CHARS
+    const result = await translator.translate(input, "auto", "en");
+
+    expect(result).toBe(input);
+    expect(mockTranslate).toHaveBeenCalledTimes(1);
+  });
+
+  it("should handle text where paragraph split leaves empty remainder", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    mockTranslate.mockImplementation(async (text: string) => ({ text }));
+
+    // 4500 chars + "\n\n" exactly — after first chunk split at paragraph
+    // boundary, remaining is empty
+    const input = "a".repeat(4500) + "\n\n";
+
+    const translator = createGoogleFreeTranslator();
+    const result = await translator.translate(input, "auto", "en");
+
+    expect(result).toBe(input);
+  });
+
+  it("should handle concurrent translations on separate translator instances", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    let callCount = 0;
+    mockTranslate.mockImplementation(async (text: string) => {
+      callCount++;
+      return { text: `T${callCount}:${text.slice(0, 5)}` };
+    });
+
+    const t1 = createGoogleFreeTranslator();
+    const t2 = createGoogleFreeTranslator();
+
+    const [r1, r2] = await Promise.all([
+      t1.translate("テスト1", "auto", "en"),
+      t2.translate("テスト2", "auto", "en"),
+    ]);
+
+    expect(r1).toMatch(/^T\d:テスト1/);
+    expect(r2).toMatch(/^T\d:テスト2/);
+    expect(mockTranslate).toHaveBeenCalledTimes(2);
+  });
+
+  it("should recover on second attempt after first attempt times out", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // First attempt hangs, second succeeds immediately
+    let callIdx = 0;
+    mockTranslate.mockImplementation(async () => {
+      callIdx++;
+      if (callIdx === 1) {
+        return new Promise(() => {}); // hang forever
+      }
+      return { text: "OK" };
+    });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate("テスト", "auto", "en");
+
+    // First attempt: timeout after 15s
+    await vi.advanceTimersByTimeAsync(15_000);
+    // Backoff: 500ms
+    await vi.advanceTimersByTimeAsync(500);
+
+    const result = await promise;
+    expect(result).toBe("OK");
+    expect(mockTranslate).toHaveBeenCalledTimes(2);
+  });
+
+  it("should handle multi-chunk text where middle chunk fails all retries", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // Three paragraphs → three chunks
+    const para = "p".repeat(3000);
+    const text = `${para}\n\n${para}\n\n${para}`;
+
+    let chunkIdx = 0;
+    mockTranslate.mockImplementation(async () => {
+      chunkIdx++;
+      if (chunkIdx >= 2 && chunkIdx <= 4) {
+        // Second chunk: 3 retries all fail
+        throw new Error("rate limited");
+      }
+      return { text: "OK" };
+    });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate(text, "auto", "en");
+
+    await flushRetryTimers();
+    const result = await promise;
+
+    // First and third chunks translated, second falls back to original
+    expect(result).toContain("OK");
+    expect(result).toContain(para);
+  });
 });

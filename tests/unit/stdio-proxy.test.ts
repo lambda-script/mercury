@@ -797,4 +797,222 @@ describe("stdio proxy", () => {
 
     vi.useRealTimers();
   });
+
+  it("should log final stats on child exit when translations completed", async () => {
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    const translator = {
+      translate: vi.fn(async () => "Hello"),
+    };
+
+    const proxy = await createProxy(detector, translator);
+
+    // Send tools/call request
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 70, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Server responds with text that will be translated
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 70,
+        result: { content: [{ type: "text", text: "こんにちは世界" }] },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Verify translation happened
+    expect(proxy.stats.toolCallsTranslated).toBe(1);
+
+    // Now child exits — should log final stats since toolCallsTranslated > 0
+    currentChild.emit("exit", 0, null);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const { logger: mockLogger } = await import("../../src/utils/logger.js");
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("[final]"),
+    );
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("Translated 1 tool calls"),
+    );
+  });
+
+  it("should track tools/call with string request IDs end-to-end", async () => {
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    const translator = {
+      translate: vi.fn(async () => "Translated"),
+    };
+
+    const proxy = await createProxy(detector, translator);
+
+    // Use string ID instead of numeric
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: "req-abc-123", method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: "req-abc-123",
+        result: { content: [{ type: "text", text: "テスト" }] },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    const messages = getOutputMessages();
+    const response = messages.find((m) => m.id === "req-abc-123");
+    expect(response).toBeDefined();
+    expect((response!.result as { content: { text: string }[] }).content[0].text).toBe("Translated");
+    expect(proxy.stats.toolCallsTranslated).toBe(1);
+  });
+
+  it("should count passed-through tool calls when text is already target language", async () => {
+    const detector = {
+      detect: vi.fn(() => ({ lang: "eng", confidence: 1 })),
+      isTargetLang: vi.fn(() => true),
+    };
+    const translator = {
+      translate: vi.fn(async (text: string) => text),
+    };
+
+    const proxy = await createProxy(detector, translator);
+
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 80, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 80,
+        result: { content: [{ type: "text", text: "Already English text" }] },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(proxy.stats.toolCallsPassedThrough).toBe(1);
+    expect(proxy.stats.toolCallsTranslated).toBe(0);
+    expect(translator.translate).not.toHaveBeenCalled();
+  });
+
+  it("should not track methods other than tools/call and tools/list", async () => {
+    await createProxy();
+
+    // Client sends a request with an arbitrary method — should NOT be tracked
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 90, method: "resources/read", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Server responds — since it's not tracked, should pass through raw
+    currentChild.mockStdout.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 90, result: { data: "resource content" } }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    const messages = getOutputMessages();
+    const response = messages.find((m) => m.id === 90);
+    expect(response).toBeDefined();
+    expect(response!.result).toEqual({ data: "resource content" });
+  });
+
+  it("should handle interleaved tools/call and tools/list responses correctly", async () => {
+    const detector = {
+      detect: vi.fn(() => ({ lang: "jpn", confidence: 1 })),
+      isTargetLang: vi.fn(() => false),
+    };
+    const translator = {
+      translate: vi.fn(async () => "Translated"),
+    };
+
+    const proxy = await createProxy(detector, translator);
+
+    // Client sends tools/list then tools/call
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n",
+    );
+    mockStdin.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: {} }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Server responds in reverse order
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        result: { content: [{ type: "text", text: "テスト" }] },
+      }) + "\n",
+    );
+    currentChild.mockStdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          tools: [{ name: "test", description: "desc", outputSchema: { type: "object" } }],
+        },
+      }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    const messages = getOutputMessages();
+
+    // tools/call response should be translated
+    const callResponse = messages.find((m) => m.id === 2);
+    expect(callResponse).toBeDefined();
+    expect((callResponse!.result as { content: { text: string }[] }).content[0].text).toBe("Translated");
+
+    // tools/list response should have outputSchema stripped
+    const listResponse = messages.find((m) => m.id === 1);
+    expect(listResponse).toBeDefined();
+    const tools = (listResponse!.result as { tools: Record<string, unknown>[] }).tools;
+    expect(tools[0]).not.toHaveProperty("outputSchema");
+    expect(tools[0]).toHaveProperty("name", "test");
+  });
+
+  it("should handle client readline error without crashing", async () => {
+    await createProxy();
+
+    // Simulate an error event on process.stdin (the mocked one)
+    expect(() => {
+      mockStdin.emit("error", new Error("stdin read error"));
+    }).not.toThrow();
+  });
+
+  it("should strip outputSchema from tools with non-object entries in the tools array", async () => {
+    const { stripOutputSchemas } = await import("../../src/proxy/stdio.js");
+
+    const result = stripOutputSchemas({
+      tools: [
+        null,
+        { name: "tool1", outputSchema: { type: "object" } },
+        42,
+        { name: "tool2" },
+      ],
+    });
+
+    const tools = (result as { tools: unknown[] }).tools;
+    expect(tools[0]).toBeNull();
+    expect(tools[1]).toEqual({ name: "tool1" });
+    expect(tools[2]).toBe(42);
+    expect(tools[3]).toEqual({ name: "tool2" });
+  });
+
+  it("should return result unchanged from stripOutputSchemas when no tools array", async () => {
+    const { stripOutputSchemas } = await import("../../src/proxy/stdio.js");
+
+    expect(stripOutputSchemas(null)).toBeNull();
+    expect(stripOutputSchemas(undefined)).toBeUndefined();
+    expect(stripOutputSchemas("string")).toBe("string");
+    expect(stripOutputSchemas({ other: "field" })).toEqual({ other: "field" });
+  });
 });
