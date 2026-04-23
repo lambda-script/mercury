@@ -162,6 +162,10 @@ export function createStdioProxy(
   // Serializes async server message handling so responses keep FIFO order.
   // Hoisted so the exit handler can drain in-flight translations before exit.
   const serverQueue = createSerialQueue("server-queue");
+  // Resolves when the server readline closes (all buffered lines emitted).
+  // Used by drainAndExit to avoid a race where the child's exit event fires
+  // before readline has processed remaining stdout data.
+  let serverReaderClosed: Promise<void> = Promise.resolve();
 
   function writeMessage(message: JsonRpcMessage): void {
     try {
@@ -275,8 +279,18 @@ export function createStdioProxy(
     });
     clientReader.on("line", (line) => {
       const msg = parseJsonRpcLine(line);
-      if (msg && child.stdin) {
-        handleClientMessage(msg, line, child.stdin);
+      if (msg) {
+        if (child.stdin) {
+          handleClientMessage(msg, line, child.stdin);
+        }
+      } else if (child.stdin && firstNonWsIndex(line) < line.length) {
+        try {
+          child.stdin.write(line + "\n");
+        } catch (err) {
+          logger.warn(
+            `Failed to write to child stdin: ${errorMessage(err)}`,
+          );
+        }
       }
     });
 
@@ -303,13 +317,21 @@ export function createStdioProxy(
    */
   function setupServerStream(child: ChildProcess): void {
     const serverReader = createInterface({ input: child.stdout! });
+    serverReaderClosed = new Promise<void>((resolve) => {
+      serverReader.on("close", resolve);
+    });
     serverReader.on("error", (err) => {
       logger.warn(`Server readline error: ${err.message}`);
     });
     serverReader.on("line", (line) => {
       serverQueue.enqueue(async () => {
         const msg = parseJsonRpcLine(line);
-        if (!msg) return;
+        if (!msg) {
+          if (firstNonWsIndex(line) < line.length) {
+            writeRawLine(line);
+          }
+          return;
+        }
         try {
           await handleServerMessage(msg, line);
         } catch (err) {
@@ -337,8 +359,8 @@ export function createStdioProxy(
     }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
     drainTimeout.unref();
 
-    serverQueue
-      .drain()
+    serverReaderClosed
+      .then(() => serverQueue.drain())
       .then(() => {
         clearTimeout(drainTimeout);
         process.exit(exitCode);
