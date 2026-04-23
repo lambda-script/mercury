@@ -111,4 +111,18 @@ describe("logger", () => {
     // Should have fallen back to stderr
     expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("[INFO] fallback test"));
   });
+
+  it("should extract message from Error objects in errorMessage", async () => {
+    const { errorMessage } = await import("../../src/utils/logger.js");
+    expect(errorMessage(new Error("test error"))).toBe("test error");
+  });
+
+  it("should convert non-Error values to string in errorMessage", async () => {
+    const { errorMessage } = await import("../../src/utils/logger.js");
+    expect(errorMessage("string error")).toBe("string error");
+    expect(errorMessage(42)).toBe("42");
+    expect(errorMessage(null)).toBe("null");
+    expect(errorMessage(undefined)).toBe("undefined");
+    expect(errorMessage({ code: "EPIPE" })).toBe("[object Object]");
+  });
 });

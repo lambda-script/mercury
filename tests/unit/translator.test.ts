@@ -580,4 +580,93 @@ describe("Google Free Translator", () => {
     expect(result).toContain("OK");
     expect(result).toContain(para);
   });
+
+  it("should handle text just over MAX_CHUNK_CHARS with surrogate pair at boundary", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    mockTranslate.mockImplementation(async (text: string) => ({ text }));
+
+    // Place a surrogate pair (emoji 🎉 U+1F389) such that the high surrogate
+    // is the last char of the first chunk and the low surrogate is the first
+    // char of the second chunk when naively splitting at 4500.
+    const prefix = "a".repeat(4499);
+    const emoji = "🎉"; // 🎉
+    const suffix = "b".repeat(500);
+    const input = prefix + emoji + suffix;
+
+    const translator = createGoogleFreeTranslator();
+    const result = await translator.translate(input, "auto", "en");
+
+    expect(result).toBe(input);
+    // Verify no chunk starts with a lone low surrogate
+    for (const call of mockTranslate.mock.calls) {
+      const chunk = call[0] as string;
+      if (chunk.length > 0) {
+        const first = chunk.charCodeAt(0);
+        expect(first >= 0xdc00 && first <= 0xdfff).toBe(false);
+      }
+    }
+  });
+
+  it("should handle all chunks failing independently with different errors", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    // Two chunks, both fail all retries with different errors
+    const para = "p".repeat(3000);
+    const text = `${para}\n\n${para}`;
+
+    mockTranslate.mockRejectedValue(new Error("network error"));
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate(text, "auto", "en");
+    await flushRetryTimers();
+    const result = await promise;
+
+    // Both chunks fall back to original text
+    expect(result).toBe(text);
+    // 2 chunks × 3 retries = 6 calls
+    expect(mockTranslate).toHaveBeenCalledTimes(6);
+  });
+
+  it("should handle text that is exactly one char over MAX_CHUNK_CHARS", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+    mockTranslate.mockImplementation(async (text: string) => ({ text }));
+
+    const input = "x".repeat(4501);
+    const translator = createGoogleFreeTranslator();
+    const result = await translator.translate(input, "auto", "en");
+
+    expect(result).toBe(input);
+    expect(mockTranslate).toHaveBeenCalledTimes(2);
+    expect((mockTranslate.mock.calls[0][0] as string).length).toBe(4500);
+    expect((mockTranslate.mock.calls[1][0] as string).length).toBe(1);
+  });
+
+  it("should handle error with cause property for logging", async () => {
+    const { createGoogleFreeTranslator } = await import(
+      "../../src/translator/google-free.js"
+    );
+
+    const err = new Error("connection failed");
+    err.cause = "ECONNREFUSED";
+    mockTranslate
+      .mockRejectedValueOnce(err)
+      .mockResolvedValueOnce({ text: "OK" });
+
+    const translator = createGoogleFreeTranslator();
+    const promise = translator.translate("test", "auto", "en");
+    await vi.advanceTimersByTimeAsync(600);
+    const result = await promise;
+
+    expect(result).toBe("OK");
+    const { logger: mockLogger } = await import("../../src/utils/logger.js");
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("ECONNREFUSED"),
+    );
+  });
 });
