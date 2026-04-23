@@ -401,7 +401,11 @@ export function createStdioProxy(
         logger.warn(
           `Child did not exit after ${GRACEFUL_SHUTDOWN_TIMEOUT_MS}ms, force killing...`,
         );
-        child.kill("SIGKILL");
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // Child already dead — handle may have been cleaned up.
+        }
       }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
       forceKillTimer.unref();
 
