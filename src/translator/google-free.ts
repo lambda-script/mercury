@@ -87,23 +87,24 @@ function splitIntoChunks(text: string): Chunk[] {
   }
 
   const chunks: Chunk[] = [];
-  let remaining = text;
+  let start = 0;
 
-  while (remaining.length > MAX_CHUNK_CHARS) {
+  while (text.length - start > MAX_CHUNK_CHARS) {
+    const searchEnd = start + MAX_CHUNK_CHARS;
     let splitIdx = -1;
     let separator = "";
 
     // Paragraph boundary (\n\n)
-    const paraIdx = remaining.lastIndexOf("\n\n", MAX_CHUNK_CHARS);
-    if (paraIdx > 0) {
+    const paraIdx = text.lastIndexOf("\n\n", searchEnd);
+    if (paraIdx > start) {
       splitIdx = paraIdx;
       separator = "\n\n";
     }
 
     // Single newline
     if (splitIdx < 0) {
-      const nlIdx = remaining.lastIndexOf("\n", MAX_CHUNK_CHARS);
-      if (nlIdx > 0) {
+      const nlIdx = text.lastIndexOf("\n", searchEnd);
+      if (nlIdx > start) {
         splitIdx = nlIdx;
         separator = "\n";
       }
@@ -111,8 +112,8 @@ function splitIntoChunks(text: string): Chunk[] {
 
     // Sentence boundary (period followed by space)
     if (splitIdx < 0) {
-      const sentIdx = remaining.lastIndexOf(". ", MAX_CHUNK_CHARS);
-      if (sentIdx > 0) {
+      const sentIdx = text.lastIndexOf(". ", searchEnd);
+      if (sentIdx > start) {
         splitIdx = sentIdx + 1; // keep the period in this chunk
         separator = " ";
       }
@@ -120,16 +121,16 @@ function splitIntoChunks(text: string): Chunk[] {
 
     // Hard split as last resort, avoiding surrogate pairs
     if (splitIdx < 0) {
-      splitIdx = safeHardSplitIndex(remaining, MAX_CHUNK_CHARS);
+      splitIdx = safeHardSplitIndex(text, searchEnd);
       separator = "";
     }
 
-    chunks.push({ text: remaining.slice(0, splitIdx), separator });
-    remaining = remaining.slice(splitIdx + separator.length);
+    chunks.push({ text: text.slice(start, splitIdx), separator });
+    start = splitIdx + separator.length;
   }
 
-  if (remaining.length > 0) {
-    chunks.push({ text: remaining, separator: "" });
+  if (start < text.length) {
+    chunks.push({ text: text.slice(start), separator: "" });
   }
 
   return chunks;
@@ -197,12 +198,13 @@ export function createGoogleFreeTranslator(): Translator {
         `Translating ${text.length} chars from ${fromLang} to ${to} (${chunks.length} chunk${chunks.length > 1 ? "s" : ""})`,
       );
 
-      let result = "";
+      const parts: string[] = [];
       for (const chunk of chunks) {
         const translated = await translateChunk(chunk.text, fromLang, to);
-        result += translated + chunk.separator;
+        parts.push(translated, chunk.separator);
       }
 
+      const result = parts.join("");
       logger.debug(`Translation complete: ${result.length} chars`);
       return result;
     },
