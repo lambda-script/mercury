@@ -198,6 +198,15 @@ export function createGoogleFreeTranslator(): Translator {
         `Translating ${text.length} chars from ${fromLang} to ${to} (${chunks.length} chunk${chunks.length > 1 ? "s" : ""})`,
       );
 
+      if (chunks.length === 1) {
+        const translated = await translateChunk(chunks[0].text, fromLang, to);
+        const result = chunks[0].separator
+          ? translated + chunks[0].separator
+          : translated;
+        logger.debug(`Translation complete: ${result.length} chars`);
+        return result;
+      }
+
       const parts: string[] = [];
       for (const chunk of chunks) {
         const translated = await translateChunk(chunk.text, fromLang, to);

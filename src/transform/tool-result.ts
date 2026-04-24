@@ -366,14 +366,23 @@ export async function transformToolResult(
           targetLang,
           stats,
         );
+        if (translated === block.text) return block;
         return { ...block, text: translated };
       }
       return block;
     }),
   );
 
+  let contentChanged = false;
+  for (let i = 0; i < translatedContent.length; i++) {
+    if (translatedContent[i] !== toolResult.content[i]) {
+      contentChanged = true;
+      break;
+    }
+  }
+
   return {
-    content: { ...toolResult, content: translatedContent },
+    content: contentChanged ? { ...toolResult, content: translatedContent } : result,
     stats,
   };
 }
