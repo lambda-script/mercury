@@ -652,6 +652,25 @@ describe("stdio proxy", () => {
     }
   });
 
+  it("should not crash when force-kill throws during shutdown", async () => {
+    vi.useFakeTimers();
+    try {
+      await createProxy();
+
+      (currentChild.kill as ReturnType<typeof vi.fn>).mockImplementation((sig: string) => {
+        if (sig === "SIGKILL") throw new Error("ERR_IPC_CHANNEL_CLOSED");
+        return true;
+      });
+
+      process.emit("SIGTERM" as unknown as "disconnect");
+
+      // Advance past the timeout — force-kill throws but should be caught
+      expect(() => vi.advanceTimersByTime(5001)).not.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("should clear force kill timer when child exits during shutdown", async () => {
     vi.useFakeTimers();
     try {
