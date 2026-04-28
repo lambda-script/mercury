@@ -157,5 +157,50 @@ describe("RequestTracker", () => {
         expect.stringContaining("capacity"),
       );
     });
+
+    it("should evict oldest by timestamp, not insertion order, when timestamps differ", () => {
+      vi.useFakeTimers();
+      const tracker = createRequestTracker();
+
+      // Fill to capacity with 1000 entries, but entry 500 has the oldest timestamp
+      for (let i = 0; i < 500; i++) {
+        tracker.track(i, "tools/call");
+      }
+      // Entry 500 is inserted at time 0
+      const entry500Time = Date.now();
+      tracker.track(500, "tools/call");
+
+      vi.advanceTimersByTime(1000);
+
+      for (let i = 501; i < 1000; i++) {
+        tracker.track(i, "tools/call");
+      }
+
+      expect(tracker.size).toBe(1000);
+
+      // Next entry should evict entry 0 (oldest by insertion order = oldest timestamp)
+      tracker.track(9999, "tools/list");
+      expect(tracker.take(0)).toBeUndefined();
+      expect(tracker.take(9999)).toBe("tools/list");
+
+      vi.useRealTimers();
+    });
+
+    it("should handle mixed string and number IDs at capacity", () => {
+      const tracker = createRequestTracker();
+
+      for (let i = 0; i < 500; i++) {
+        tracker.track(i, "tools/call");
+        tracker.track(`str-${i}`, "tools/list");
+      }
+      expect(tracker.size).toBe(1000);
+
+      // Adding one more evicts the oldest (id=0)
+      tracker.track("overflow", "tools/call");
+      expect(tracker.size).toBe(1000);
+      expect(tracker.take(0)).toBeUndefined();
+      expect(tracker.take("overflow")).toBe("tools/call");
+      expect(tracker.take("str-0")).toBe("tools/list");
+    });
   });
 });

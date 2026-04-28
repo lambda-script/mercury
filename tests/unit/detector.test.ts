@@ -194,4 +194,71 @@ describe("FrancDetector", () => {
       expect(detector.isTargetLang(longJapanese, "en")).toBe(false);
     });
   });
+
+  describe("kana override for kanji-heavy text", () => {
+    it("should override franc cmn detection to jpn when kana is present", () => {
+      // Long Chinese text that franc classifies as cmn, but with a katakana
+      // middle dot (U+30FB ・) which falls in the katakana range.
+      // This triggers the kana override: franc returns "cmn" → overridden to "jpn".
+      const chinese = "这是中文文本用于测试语言检测功能测试完全由汉字组成国务院令全国人民代表大会常务委员会修改中华人民共和国刑事";
+      const withKana = chinese.repeat(3) + "・";
+      const result = detector.detect(withKana);
+      expect(result.lang).toBe("jpn");
+    });
+
+    it("should detect kanji-heavy Japanese with scattered kana as jpn, not cmn", () => {
+      const kanjiHeavy = "国際連合総会決議第二千六百二十五号テスト検証文書管理規定。";
+      const result = detector.detect(kanjiHeavy);
+      expect(result.lang).toBe("jpn");
+    });
+
+    it("should detect text with only hiragana particles as Japanese", () => {
+      const text = "経済産業省の報告書は来年度の予算案を示している。政策立案に基づく国家戦略。";
+      const result = detector.detect(text);
+      expect(result.lang).toBe("jpn");
+    });
+  });
+
+  describe("target lang cache invalidation", () => {
+    it("should handle switching target languages correctly", () => {
+      const cachingDetector = createFrancDetector(20);
+      const longJa = "これは日本語のテストテキストです。翻訳が必要です。";
+
+      // First call with target "en"
+      expect(cachingDetector.isTargetLang(longJa, "en")).toBe(false);
+      // Switch target to "ja" — cache of target3 should update
+      expect(cachingDetector.isTargetLang(longJa, "ja")).toBe(true);
+      // Switch back to "en"
+      expect(cachingDetector.isTargetLang(longJa, "en")).toBe(false);
+    });
+  });
+
+  describe("short text edge cases", () => {
+    const shortDetector = createFrancDetector(200);
+
+    it("should detect short Japanese kana text by script", () => {
+      // Pure hiragana, short
+      const result = shortDetector.detect("こんにちは");
+      expect(result.lang).toBe("jpn");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should detect short katakana text as Japanese", () => {
+      const result = shortDetector.detect("テスト");
+      expect(result.lang).toBe("jpn");
+      expect(result.confidence).toBe(1);
+    });
+
+    it("should return undetermined for short numeric-only text", () => {
+      const result = shortDetector.detect("12345");
+      expect(result.lang).toBe("und");
+      expect(result.confidence).toBe(0);
+    });
+
+    it("should return undetermined for short punctuation text", () => {
+      const result = shortDetector.detect("...");
+      expect(result.lang).toBe("und");
+      expect(result.confidence).toBe(0);
+    });
+  });
 });
